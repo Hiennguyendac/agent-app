@@ -14,7 +14,7 @@ import type { Task, TaskResult } from "../../../packages/shared-types/index.js";
 loadEnvironmentVariables();
 
 let openAiClient: OpenAI | null = null;
-const OPENAI_TIMEOUT_MS = 30000;
+const OPENAI_TIMEOUT_MS = 90000;
 
 const REQUIRED_SECTIONS = [
   "Summary",
