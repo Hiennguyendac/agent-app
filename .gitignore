@@ -1,0 +1,16 @@
+node_modules
+.next
+dist
+build
+.env
+.env.local
+.env.*
+**/.env
+**/.env.local
+**/.env.*
+!.env.example
+!**/.env.example
+*.log
+.DS_Store
+__pycache__
+.venv

@@ -1,0 +1,21 @@
+{
+  "name": "@agent-app/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/apps/api/src/index.js",
+    "dev": "npm run build && npm start",
+    "check-db": "node dist/apps/api/src/test-db.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "openai": "^4.104.0",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  db:
+    # This Postgres container provides a local PostgreSQL database
+    # for development and future API persistence work.
+    image: postgres:16
+    container_name: agentapp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agentapp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    # Redis is already prepared for future use, but it is not required
+    # for the current Growth MVP database migration step.
+    image: redis:7
+    container_name: agentapp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  # This volume keeps PostgreSQL data between container restarts.
+  postgres_data:
