@@ -15,7 +15,7 @@ Minimum env for the current production flow:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@db:5432/agentapp
-PORT=3001
+PORT=3003
 NODE_ENV=production
 ALLOW_INMEMORY_FALLBACK=false
 OPENAI_API_KEY=your_openai_api_key_here
@@ -44,9 +44,9 @@ npm run build:web
 
 ## Database Bootstrap
 
-The API depends on this schema file:
+The API depends on the SQL migrations in:
 
-- `infra/sql/001_growth_mvp_schema.sql`
+- `infra/sql/`
 
 Prepare `DATABASE_URL`, then check connectivity:
 
@@ -69,7 +69,7 @@ Bootstrap from zero:
 
 Local/dev usually points `DATABASE_URL` at local Postgres.
 
-Production uses the same schema file, but `DATABASE_URL` should point at your production Postgres or Supabase Postgres before API start/restart.
+Production uses the same SQL migrations, but `DATABASE_URL` should point at your production Postgres or Supabase Postgres before API start/restart.
 
 ## Database Backup And Restore
 
@@ -117,7 +117,7 @@ After restore:
 ```bash
 npm run db:check
 npm run health
-curl -sS http://localhost:3001/tasks
+curl -sS "http://localhost:${PORT:-3003}/tasks"
 ```
 
 Local/dev:
@@ -235,7 +235,7 @@ npm run pm2:status
 4. Task list route responds:
 
 ```bash
-curl -sS http://localhost:3001/tasks
+curl -sS "http://localhost:${PORT:-3003}/tasks"
 ```
 
 5. Task detail route responds:
@@ -243,8 +243,8 @@ curl -sS http://localhost:3001/tasks
 Get one id from the task list, then query detail:
 
 ```bash
-TASK_ID=$(curl -sS http://localhost:3001/tasks | jq -r '.tasks[0].task.id')
-curl -sS "http://localhost:3001/tasks/$TASK_ID"
+TASK_ID=$(curl -sS "http://localhost:${PORT:-3003}/tasks" | jq -r '.tasks[0].task.id')
+curl -sS "http://localhost:${PORT:-3003}/tasks/$TASK_ID"
 ```
 
 If there are no tasks yet, create one from the UI first, then rerun the detail check.

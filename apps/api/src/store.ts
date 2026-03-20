@@ -4,6 +4,7 @@ import type {
   TaskStatus
 } from "../../../packages/shared-types/index.js";
 import { getDbPool, handleStorageFailure } from "./db.js";
+import type { TaskAccessContext } from "./request-user.js";
 
 /**
  * Storage strategy:
@@ -19,6 +20,7 @@ import { getDbPool, handleStorageFailure } from "./db.js";
  */
 const tasks: Task[] = [];
 const taskResults = new Map<string, TaskResult>();
+const taskOwners = new Map<string, string | null>();
 
 const INITIAL_TASK_STATUS: TaskStatus = "pending";
 
@@ -34,9 +36,10 @@ export interface TaskListItem {
   result?: TaskResult;
 }
 
-export async function listTasks(): Promise<Task[]> {
+export async function listTasks(accessContext?: TaskAccessContext): Promise<Task[]> {
   try {
     const pool = getDbPool();
+    const ownershipClause = buildOwnershipWhereClause(1, accessContext);
     const result = await pool.query(
       `
         SELECT
@@ -47,24 +50,31 @@ export async function listTasks(): Promise<Task[]> {
           audience,
           notes,
           status,
-          created_at
+          created_at,
+          owner_id
         FROM tasks
+        ${ownershipClause.clause}
         ORDER BY created_at DESC
-      `
+      `,
+      ownershipClause.values
     );
 
     const dbTasks = result.rows.map(mapTaskRowToTask);
     syncTasksMemory(dbTasks);
+    syncTaskOwnersMemory(result.rows);
     return dbTasks;
   } catch (error) {
     handleStorageFailure("listTasks()", error);
-    return tasks;
+    return tasks.filter((task) => hasTaskAccess(task.id, accessContext));
   }
 }
 
-export async function listTaskItems(): Promise<TaskListItem[]> {
+export async function listTaskItems(
+  accessContext?: TaskAccessContext
+): Promise<TaskListItem[]> {
   try {
     const pool = getDbPool();
+    const ownershipClause = buildOwnershipWhereClause(1, accessContext);
 
     const tasksResult = await pool.query(
       `
@@ -76,10 +86,13 @@ export async function listTaskItems(): Promise<TaskListItem[]> {
           audience,
           notes,
           status,
-          created_at
+          created_at,
+          owner_id
         FROM tasks
+        ${ownershipClause.clause}
         ORDER BY created_at DESC
-      `
+      `,
+      ownershipClause.values
     );
 
     const resultsResult = await pool.query(
@@ -99,6 +112,7 @@ export async function listTaskItems(): Promise<TaskListItem[]> {
     const dbResults = resultsResult.rows.map(mapTaskResultRowToTaskResult);
 
     syncTasksMemory(dbTasks);
+    syncTaskOwnersMemory(tasksResult.rows);
     syncTaskResultsMemory(dbResults);
 
     return dbTasks.map((task) => ({
@@ -107,7 +121,9 @@ export async function listTaskItems(): Promise<TaskListItem[]> {
     }));
   } catch (error) {
     handleStorageFailure("listTaskItems()", error);
-    return tasks.map((task) => ({
+    return tasks
+      .filter((task) => hasTaskAccess(task.id, accessContext))
+      .map((task) => ({
       task,
       result: taskResults.get(task.id)
     }));
@@ -115,10 +131,12 @@ export async function listTaskItems(): Promise<TaskListItem[]> {
 }
 
 export async function getTaskItemById(
-  taskId: string
+  taskId: string,
+  accessContext?: TaskAccessContext
 ): Promise<TaskListItem | undefined> {
   try {
     const pool = getDbPool();
+    const ownershipClause = buildOwnershipWhereClause(2, accessContext);
 
     const taskResult = await pool.query(
       `
@@ -130,11 +148,13 @@ export async function getTaskItemById(
           audience,
           notes,
           status,
-          created_at
+          created_at,
+          owner_id
         FROM tasks
         WHERE id = $1
+        ${ownershipClause.clause ? `AND (${ownershipClause.clause.replace(/^WHERE\s+/u, "")})` : ""}
       `,
-      [taskId]
+      [taskId, ...ownershipClause.values]
     );
 
     if (taskResult.rows.length === 0) {
@@ -159,6 +179,7 @@ export async function getTaskItemById(
 
     const task = mapTaskRowToTask(taskResult.rows[0]);
     upsertTaskInMemory(task);
+    upsertTaskOwnerInMemory(task.id, taskResult.rows[0].owner_id ?? null);
 
     const result =
       resultRow.rows.length > 0
@@ -178,7 +199,7 @@ export async function getTaskItemById(
 
     const task = tasks.find((item) => item.id === taskId);
 
-    if (!task) {
+    if (!task || !hasTaskAccess(task.id, accessContext)) {
       return undefined;
     }
 
@@ -189,7 +210,10 @@ export async function getTaskItemById(
   }
 }
 
-export async function createTask(input: CreateTaskInput): Promise<Task> {
+export async function createTask(
+  input: CreateTaskInput,
+  ownerId: string | null = null
+): Promise<Task> {
   const task: Task = {
     id: createTaskId(),
     taskType: "growth",
@@ -202,7 +226,7 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
   };
 
   try {
-    await insertTaskIntoPostgres(task);
+    await insertTaskIntoPostgres(task, ownerId);
 
     console.log(
       `[api] Stored task ${task.id} with title "${task.title}" in PostgreSQL`
@@ -212,6 +236,7 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
   }
 
   upsertTaskInMemory(task);
+  upsertTaskOwnerInMemory(task.id, ownerId);
   return task;
 }
 
@@ -251,15 +276,22 @@ export async function saveTaskResult(result: TaskResult): Promise<void> {
 }
 
 export async function deleteTask(taskId: string): Promise<boolean> {
+  return deleteTaskWithAccess(taskId);
+}
+
+export async function deleteTaskWithAccess(
+  taskId: string,
+  accessContext?: TaskAccessContext
+): Promise<boolean> {
   let deletedInPostgres = false;
 
   try {
-    deletedInPostgres = await deleteTaskInPostgres(taskId);
+    deletedInPostgres = await deleteTaskInPostgres(taskId, accessContext);
   } catch (error) {
     handleStorageFailure("deleteTask()", error);
   }
 
-  const deletedInMemory = deleteTaskFromMemory(taskId);
+  const deletedInMemory = deleteTaskFromMemory(taskId, accessContext);
 
   return deletedInPostgres || deletedInMemory;
 }
@@ -268,7 +300,10 @@ function createTaskId(): string {
   return `task_${Date.now()}`;
 }
 
-async function insertTaskIntoPostgres(task: Task): Promise<void> {
+async function insertTaskIntoPostgres(
+  task: Task,
+  ownerId: string | null
+): Promise<void> {
   const pool = getDbPool();
 
   await pool.query(
@@ -281,9 +316,10 @@ async function insertTaskIntoPostgres(task: Task): Promise<void> {
         audience,
         notes,
         status,
-        created_at
+        created_at,
+        owner_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `,
     [
       task.id,
@@ -293,7 +329,8 @@ async function insertTaskIntoPostgres(task: Task): Promise<void> {
       task.audience,
       task.notes ?? null,
       task.status,
-      task.createdAt
+      task.createdAt,
+      ownerId
     ]
   );
 }
@@ -317,7 +354,8 @@ async function updateTaskStatusInPostgres(
         audience,
         notes,
         status,
-        created_at
+        created_at,
+        owner_id
     `,
     [taskId, status]
   );
@@ -354,25 +392,34 @@ async function insertTaskResultIntoPostgres(result: TaskResult): Promise<void> {
   );
 }
 
-async function deleteTaskInPostgres(taskId: string): Promise<boolean> {
+async function deleteTaskInPostgres(
+  taskId: string,
+  accessContext?: TaskAccessContext
+): Promise<boolean> {
   const pool = getDbPool();
   const client = await pool.connect();
+  const ownershipClause = buildOwnershipWhereClause(2, accessContext);
+  const deleteTaskParams = [taskId, ...ownershipClause.values];
+  const deleteTaskSql = `
+    DELETE FROM tasks
+    WHERE id = $1
+    ${ownershipClause.clause ? `AND (${ownershipClause.clause.replace(/^WHERE\s+/u, "")})` : ""}
+  `;
 
   try {
     await client.query("BEGIN");
+
+    const taskDeleteResult = await client.query(deleteTaskSql, deleteTaskParams);
+
+    if ((taskDeleteResult.rowCount ?? 0) === 0) {
+      await client.query("ROLLBACK");
+      return false;
+    }
 
     await client.query(
       `
         DELETE FROM task_results
         WHERE task_id = $1
-      `,
-      [taskId]
-    );
-
-    const taskDeleteResult = await client.query(
-      `
-        DELETE FROM tasks
-        WHERE id = $1
       `,
       [taskId]
     );
@@ -430,14 +477,22 @@ function upsertTaskInMemory(task: Task): void {
   tasks[index] = task;
 }
 
-function deleteTaskFromMemory(taskId: string): boolean {
+function deleteTaskFromMemory(
+  taskId: string,
+  accessContext?: TaskAccessContext
+): boolean {
   const index = tasks.findIndex((item) => item.id === taskId);
-
-  taskResults.delete(taskId);
 
   if (index === -1) {
     return false;
   }
+
+  if (!hasTaskAccess(taskId, accessContext)) {
+    return false;
+  }
+
+  taskResults.delete(taskId);
+  taskOwners.delete(taskId);
 
   tasks.splice(index, 1);
   return true;
@@ -448,6 +503,14 @@ function syncTasksMemory(dbTasks: Task[]): void {
   tasks.push(...dbTasks);
 }
 
+function syncTaskOwnersMemory(rows: Array<{ id: string; owner_id?: string | null }>): void {
+  taskOwners.clear();
+
+  for (const row of rows) {
+    upsertTaskOwnerInMemory(row.id, row.owner_id ?? null);
+  }
+}
+
 function syncTaskResultsMemory(results: TaskResult[]): void {
   taskResults.clear();
 
@@ -456,4 +519,49 @@ function syncTaskResultsMemory(results: TaskResult[]): void {
       taskResults.set(result.taskId, result);
     }
   }
+}
+
+function upsertTaskOwnerInMemory(taskId: string, ownerId: string | null): void {
+  taskOwners.set(taskId, ownerId);
+}
+
+function hasTaskAccess(
+  taskId: string,
+  accessContext?: TaskAccessContext
+): boolean {
+  if (!accessContext?.enforceOwnership) {
+    return true;
+  }
+
+  const ownerId = taskOwners.get(taskId) ?? null;
+
+  if (!ownerId) {
+    return true;
+  }
+
+  return ownerId === accessContext.userId;
+}
+
+function buildOwnershipWhereClause(
+  startIndex: number,
+  accessContext?: TaskAccessContext
+): { clause: string; values: string[] } {
+  if (!accessContext?.enforceOwnership) {
+    return {
+      clause: "",
+      values: []
+    };
+  }
+
+  if (!accessContext.userId) {
+    return {
+      clause: "WHERE owner_id IS NULL",
+      values: []
+    };
+  }
+
+  return {
+    clause: `WHERE (owner_id = $${startIndex} OR owner_id IS NULL)`,
+    values: [accessContext.userId]
+  };
 }

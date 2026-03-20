@@ -15,7 +15,7 @@
     "start:api": "npm run start --prefix apps/api",
     "web": "npm run dev --prefix apps/web",
     "dev": "concurrently -k -n api,web -c blue,green \"npm run api\" \"npm run web\"",
-    "health": "curl -fsS http://localhost:3001/health",
+    "health": "node scripts/health-check.mjs",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:restart": "pm2 restart agent-api",
     "pm2:status": "pm2 status agent-api",

@@ -1,9 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { routeTask } from "../../orchestrator/src/index.js";
 import { logError, logInfo, logRequest } from "./log.js";
+import { resolveTaskAccessContext } from "./request-user.js";
 import {
   createTask,
-  deleteTask,
+  deleteTaskWithAccess,
   getTaskItemById,
   listTaskItems,
   saveTaskResult,
@@ -30,6 +31,7 @@ export async function handleRequest(
   const url = req.url ?? "/";
   const startedAtMs = Date.now();
   const taskId = getTaskIdFromUrl(url);
+  const accessContext = resolveTaskAccessContext(req);
 
   if (method === "GET" && url === "/health") {
     sendJson(res, 200, {
@@ -41,7 +43,7 @@ export async function handleRequest(
   if (method === "GET" && url === "/tasks") {
     logInfo("Listing tasks");
     sendJson(res, 200, {
-      tasks: await listTaskItems()
+      tasks: await listTaskItems(accessContext)
     }, startedAtMs, method, url);
     return;
   }
@@ -57,7 +59,7 @@ export async function handleRequest(
       return;
     }
 
-    const task = await createTask(body);
+    const task = await createTask(body, accessContext.userId);
 
     try {
       await updateTaskStatus(task.id, "running");
@@ -96,7 +98,7 @@ export async function handleRequest(
   }
 
   if (method === "GET" && taskId) {
-    const taskItem = await getTaskItemById(taskId);
+    const taskItem = await getTaskItemById(taskId, accessContext);
 
     if (!taskItem) {
       sendJson(res, 404, {
@@ -114,7 +116,7 @@ export async function handleRequest(
   }
 
   if (method === "DELETE" && taskId) {
-    const deleted = await deleteTask(taskId);
+    const deleted = await deleteTaskWithAccess(taskId, accessContext);
 
     if (!deleted) {
       sendJson(res, 404, {
