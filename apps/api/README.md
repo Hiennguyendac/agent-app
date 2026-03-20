@@ -31,6 +31,35 @@ Production:
 - PostgreSQL must be reachable during startup
 - if PostgreSQL is unavailable, the API exits instead of silently serving degraded data
 
+## Logs
+
+The API writes compact runtime logs to stdout/stderr.
+
+Useful log categories:
+
+- startup: server start, storage mode, PostgreSQL startup check
+- request: method, path, status code, duration, and `taskId` when relevant
+- error: startup failure, DB/storage failure, task processing failure
+
+In production with PM2:
+
+```bash
+npm run pm2:logs
+```
+
+Or directly:
+
+```bash
+pm2 logs agent-api
+```
+
+How to read common failures:
+
+- startup fails with `DATABASE_URL is required`: production env is incomplete
+- startup fails after PostgreSQL check: DB is unreachable or credentials are wrong
+- `falling back to in-memory storage`: fallback is active, usually local/dev only
+- `in-memory fallback is disabled`: production tried to use Postgres and failed
+
 You can override the fallback policy explicitly:
 
 ```env

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadEnv } from "dotenv";
 import { Pool } from "pg";
+import { logError, logInfo, logWarn } from "./log.js";
 
 /**
  * This file owns the PostgreSQL connection for the API.
@@ -43,12 +44,14 @@ export function logStorageMode(): void {
   const runtimeLabel = isProductionRuntime() ? "production" : "non-production";
   const fallbackLabel = isInMemoryFallbackAllowed() ? "enabled" : "disabled";
 
-  console.log(
-    `[api] Storage mode: PostgreSQL primary, in-memory fallback ${fallbackLabel} (${runtimeLabel}).`
-  );
+  logInfo("Storage mode configured", {
+    storage: "postgresql-primary",
+    fallback: `in-memory-${fallbackLabel}`,
+    runtime: runtimeLabel
+  });
 
   if (!databaseUrl) {
-    console.warn("[api] DATABASE_URL is not set.");
+    logWarn("DATABASE_URL is not set.");
   }
 }
 
@@ -98,8 +101,8 @@ export async function ensureStorageReadyForStartup(): Promise<void> {
   logStorageMode();
 
   if (isInMemoryFallbackAllowed()) {
-    console.warn(
-      "[api] In-memory fallback is allowed. PostgreSQL will still be used when DATABASE_URL is available."
+    logWarn(
+      "In-memory fallback is allowed. PostgreSQL will still be used when DATABASE_URL is available."
     );
     return;
   }
@@ -111,21 +114,22 @@ export async function ensureStorageReadyForStartup(): Promise<void> {
   }
 
   await testDatabaseConnection();
-  console.log("[api] PostgreSQL startup check passed.");
+  logInfo("PostgreSQL startup check passed.");
 }
 
 export function handleStorageFailure(operation: string, error: unknown): void {
   if (isInMemoryFallbackAllowed()) {
-    console.warn(
-      `[api] ${operation} PostgreSQL path failed. Falling back to in-memory storage.`,
-      error
-    );
+    logWarn(`${operation} PostgreSQL path failed. Falling back to in-memory storage.`, {
+      error: error instanceof Error ? error.message : String(error)
+    });
     return;
   }
 
-  console.error(
-    `[api] ${operation} PostgreSQL path failed and in-memory fallback is disabled.`,
-    error
+  logError(
+    `${operation} PostgreSQL path failed and in-memory fallback is disabled.`,
+    {
+      error: error instanceof Error ? error.message : String(error)
+    }
   );
 
   throw error instanceof Error

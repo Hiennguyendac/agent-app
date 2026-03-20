@@ -1,8 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { routeTask } from "../../orchestrator/src/index.js";
+import { logError, logInfo, logRequest } from "./log.js";
 import {
   createTask,
   deleteTask,
+  getTaskItemById,
   listTaskItems,
   saveTaskResult,
   updateTaskStatus,
@@ -15,6 +17,7 @@ import {
  * It handles:
  * - GET /health
  * - GET /tasks
+ * - GET /tasks/:id
  * - POST /tasks
  * - DELETE /tasks/:id
  */
@@ -25,30 +28,32 @@ export async function handleRequest(
 ): Promise<void> {
   const method = req.method ?? "GET";
   const url = req.url ?? "/";
+  const startedAtMs = Date.now();
+  const taskId = getTaskIdFromUrl(url);
 
   if (method === "GET" && url === "/health") {
     sendJson(res, 200, {
       status: "ok"
-    });
+    }, startedAtMs, method, url);
     return;
   }
 
   if (method === "GET" && url === "/tasks") {
+    logInfo("Listing tasks");
     sendJson(res, 200, {
       tasks: await listTaskItems()
-    });
+    }, startedAtMs, method, url);
     return;
   }
 
   if (method === "POST" && url === "/tasks") {
     const body = await readJsonBody(req);
-
-    console.log("[api] Received task creation request");
+    logInfo("Received task creation request");
 
     if (!isCreateTaskInput(body)) {
       sendJson(res, 400, {
         error: getCreateTaskInputError(body)
-      });
+      }, startedAtMs, method, url);
       return;
     }
 
@@ -60,27 +65,53 @@ export async function handleRequest(
       await saveTaskResult(result);
       const updatedTask = (await updateTaskStatus(task.id, "completed")) ?? task;
 
-      console.log(`[api] Returning success response for task ${updatedTask.id}`);
+      logInfo("Task completed", {
+        taskId: updatedTask.id,
+        status: updatedTask.status
+      });
 
       sendJson(res, 201, {
         task: updatedTask,
         result
+      }, startedAtMs, method, url, {
+        taskId: updatedTask.id
       });
     } catch (error: unknown) {
       const failedTask = (await updateTaskStatus(task.id, "failed")) ?? task;
 
-      console.log(`[api] Returning error response for task ${failedTask.id}`);
+      logError("Task processing failed", {
+        taskId: failedTask.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
 
       sendJson(res, 500, {
         task: failedTask,
         error:
           error instanceof Error ? error.message : "Failed to process task"
+      }, startedAtMs, method, url, {
+        taskId: failedTask.id
       });
     }
     return;
   }
 
-  const taskId = getTaskIdFromUrl(url);
+  if (method === "GET" && taskId) {
+    const taskItem = await getTaskItemById(taskId);
+
+    if (!taskItem) {
+      sendJson(res, 404, {
+        error: "Task not found"
+      }, startedAtMs, method, url, {
+        taskId
+      });
+      return;
+    }
+
+    sendJson(res, 200, taskItem, startedAtMs, method, url, {
+      taskId
+    });
+    return;
+  }
 
   if (method === "DELETE" && taskId) {
     const deleted = await deleteTask(taskId);
@@ -88,19 +119,27 @@ export async function handleRequest(
     if (!deleted) {
       sendJson(res, 404, {
         error: "Task not found"
+      }, startedAtMs, method, url, {
+        taskId
       });
       return;
     }
 
+    logInfo("Task deleted", {
+      taskId
+    });
+
     sendJson(res, 200, {
       success: true
+    }, startedAtMs, method, url, {
+      taskId
     });
     return;
   }
 
   sendJson(res, 404, {
     error: "Route not found"
-  });
+  }, startedAtMs, method, url);
 }
 
 function getTaskIdFromUrl(url: string): string | null {
@@ -184,10 +223,18 @@ function isNonEmptyString(value: unknown): value is string {
 function sendJson(
   res: ServerResponse,
   statusCode: number,
-  payload: unknown
+  payload: unknown,
+  startedAtMs?: number,
+  method?: string,
+  path?: string,
+  metadata?: Record<string, unknown>
 ): void {
   res.writeHead(statusCode, {
     "Content-Type": "application/json"
   });
   res.end(JSON.stringify(payload, null, 2));
+
+  if (startedAtMs !== undefined && method && path) {
+    logRequest(method, path, statusCode, startedAtMs, metadata);
+  }
 }
