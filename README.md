@@ -161,6 +161,18 @@ Restart after deploy:
 npm run pm2:restart
 ```
 
+Check PM2 process status:
+
+```bash
+npm run pm2:status
+```
+
+Open the PM2 live monitor:
+
+```bash
+npm run pm2:monit
+```
+
 Useful PM2 logs command:
 
 ```bash
@@ -172,6 +184,15 @@ Equivalent direct PM2 command:
 ```bash
 pm2 restart agent-api
 ```
+
+Recommended PM2 production settings in this repo:
+
+- `fork` mode with `instances: 1`
+- `autorestart: true`
+- `watch: false`
+- `max_memory_restart: 300M`
+
+Use cluster mode only if you intentionally redesign state/runtime expectations around multiple API processes.
 
 ## Health Check
 
@@ -227,6 +248,49 @@ curl -sS "http://localhost:3001/tasks/$TASK_ID"
 ```
 
 If there are no tasks yet, create one from the UI first, then rerun the detail check.
+
+## Monitoring
+
+Minimal production monitoring loop:
+
+1. Check the API health endpoint regularly:
+
+```bash
+npm run health
+```
+
+2. Check the PM2 process state:
+
+```bash
+npm run pm2:status
+```
+
+3. Inspect logs when health fails or requests error:
+
+```bash
+npm run pm2:logs
+```
+
+4. Use the PM2 monitor for live CPU and memory:
+
+```bash
+npm run pm2:monit
+```
+
+How to recognize common failures:
+
+- health check fails but PM2 is `online`: app is up but request handling or DB connectivity is failing
+- PM2 shows frequent restarts or unstable uptime: startup is failing or the process is crashing repeatedly
+- memory keeps rising until restart: inspect logs around the `max_memory_restart` event
+- logs mention PostgreSQL startup check or fallback policy: likely DB or env issue rather than web/UI
+
+Safe recovery steps:
+
+1. Run `npm run pm2:status`
+2. Run `npm run health`
+3. Run `npm run pm2:logs`
+4. Fix env or DB issue if logs point to startup/storage failure
+5. Run `npm run pm2:restart`
 
 ## Local Dev
 

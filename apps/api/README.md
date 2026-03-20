@@ -53,12 +53,34 @@ Or directly:
 pm2 logs agent-api
 ```
 
+Other useful PM2 commands:
+
+```bash
+npm run pm2:status
+npm run pm2:monit
+npm run pm2:restart
+```
+
 How to read common failures:
 
 - startup fails with `DATABASE_URL is required`: production env is incomplete
 - startup fails after PostgreSQL check: DB is unreachable or credentials are wrong
 - `falling back to in-memory storage`: fallback is active, usually local/dev only
 - `in-memory fallback is disabled`: production tried to use Postgres and failed
+- PM2 shows frequent restarts with low uptime: startup failure or crash loop
+- PM2 process is `online` but `/health` fails: app process is up, but request path or DB dependency is unhealthy
+
+## PM2 Runtime
+
+The included ecosystem config is intentionally simple:
+
+- `fork` mode
+- `instances: 1`
+- `autorestart: true`
+- `watch: false`
+- `max_memory_restart: 300M`
+
+This is the safer default for the current API because it avoids accidental multi-process drift while still letting PM2 restart a bad process.
 
 You can override the fallback policy explicitly:
 
