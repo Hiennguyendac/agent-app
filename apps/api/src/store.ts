@@ -5,6 +5,18 @@ import type {
 } from "../../../packages/shared-types/index.js";
 import { getDbPool } from "./db.js";
 
+/**
+ * Storage strategy:
+ * - primary path: PostgreSQL via DATABASE_URL
+ * - fallback path: in-memory arrays/maps in this process
+ *
+ * The in-memory layer now acts as both:
+ * - a fallback when PostgreSQL is unavailable
+ * - a small read-through mirror of rows already fetched from PostgreSQL
+ *
+ * This keeps the API running during local setup problems, but it is not a
+ * stable production store because data is process-local and resets on restart.
+ */
 const tasks: Task[] = [];
 const taskResults = new Map<string, TaskResult>();
 
@@ -99,6 +111,81 @@ export async function listTaskItems(): Promise<TaskListItem[]> {
       task,
       result: taskResults.get(task.id)
     }));
+  }
+}
+
+export async function getTaskItemById(
+  taskId: string
+): Promise<TaskListItem | undefined> {
+  try {
+    const pool = getDbPool();
+
+    const taskResult = await pool.query(
+      `
+        SELECT
+          id,
+          task_type,
+          title,
+          goal,
+          audience,
+          notes,
+          status,
+          created_at
+        FROM tasks
+        WHERE id = $1
+      `,
+      [taskId]
+    );
+
+    if (taskResult.rows.length === 0) {
+      return undefined;
+    }
+
+    const resultRow = await pool.query(
+      `
+        SELECT
+          id,
+          task_id,
+          agent_name,
+          output_text,
+          created_at
+        FROM task_results
+        WHERE task_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [taskId]
+    );
+
+    const task = mapTaskRowToTask(taskResult.rows[0]);
+    upsertTaskInMemory(task);
+
+    const result =
+      resultRow.rows.length > 0
+        ? mapTaskResultRowToTaskResult(resultRow.rows[0])
+        : undefined;
+
+    if (result) {
+      taskResults.set(task.id, result);
+    }
+
+    return {
+      task,
+      result
+    };
+  } catch (error) {
+    console.error("[api] getTaskItemById() falling back to memory:", error);
+
+    const task = tasks.find((item) => item.id === taskId);
+
+    if (!task) {
+      return undefined;
+    }
+
+    return {
+      task,
+      result: taskResults.get(taskId)
+    };
   }
 }
 

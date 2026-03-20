@@ -4,18 +4,16 @@ import { config as loadEnv } from "dotenv";
 import { Pool } from "pg";
 
 /**
- * This file is the first PostgreSQL access layer for the API.
+ * This file owns the PostgreSQL connection for the API.
  *
- * Right now, the app still uses in-memory storage.
- * This file does not replace that yet.
+ * The current production path uses PostgreSQL through DATABASE_URL.
+ * That can be a local Postgres instance or a Supabase Postgres connection string.
  *
- * Its job is only to:
+ * Its job is to:
  * - load environment variables from .env when available
  * - read DATABASE_URL
  * - create a shared PostgreSQL pool
  * - provide a small connection test helper
- *
- * Later, store.ts can use this file to run real database queries.
  */
 
 loadEnvironmentVariables();
@@ -48,12 +46,10 @@ export function getDbPool(): Pool {
 /**
  * Runs a very small PostgreSQL connection test.
  *
- * This is useful later when you want to confirm:
+ * This is useful when you want to confirm:
  * - the API can reach PostgreSQL
  * - DATABASE_URL is correct
  * - the database is accepting connections
- *
- * It is not used by the app flow yet.
  */
 export async function testDatabaseConnection(): Promise<boolean> {
   const client = await getDbPool().connect();

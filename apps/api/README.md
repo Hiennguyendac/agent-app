@@ -1,112 +1,106 @@
 # API App
 
-This folder contains a very small MVP API for the Growth task flow.
+Small Node/TypeScript API for the current Growth task flow.
 
-It does not include:
+## Current Storage Path
 
-- web app
-- database
+The API now uses PostgreSQL as the primary data store through `DATABASE_URL`.
 
-It only provides a simple API to:
+It does not use a Supabase client library directly. If you use Supabase, the API still talks to it as plain Postgres through the `pg` driver and a normal connection string.
 
-- create a task
-- list tasks
+There is still an in-memory fallback in `src/store.ts` when PostgreSQL is unavailable.
 
-## Files Created
+That fallback is useful for local recovery, but it is not a stable production store because:
 
-### `package.json`
+- data is process-local
+- data disappears on restart
+- multiple API instances would diverge
 
-This defines the API package name and basic scripts.
+## Required Env
 
-It includes:
+Minimum env for stable production behavior:
 
-- a `build` script for TypeScript
-- a `start` script for the compiled server
+```env
+DATABASE_URL=postgresql://...
+PORT=3001
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-5-mini
+```
 
-### `tsconfig.json`
+Notes:
 
-This tells TypeScript how to compile the API code.
+- `DATABASE_URL` is required for the real persisted data path.
+- `OPENAI_API_KEY` is required when the Growth agent should generate real output.
+- `PORT` controls the API HTTP server and defaults to `3001`.
 
-It also includes the shared types from `packages/shared-types`.
+## Tables In Use
 
-### `src/index.ts`
+Schema file:
 
-This is the API entry point.
+- `infra/sql/001_growth_mvp_schema.sql`
 
-It starts the HTTP server on port `3001`.
+Current tables:
 
-### `src/http.ts`
+- `tasks`
+- `task_results`
 
-This file handles the HTTP routes.
+`tasks` stores the main task row:
 
-Right now it supports:
+- `id`
+- `task_type`
+- `title`
+- `goal`
+- `audience`
+- `notes`
+- `status`
+- `created_at`
 
+`task_results` stores one result row per task:
+
+- `id`
+- `task_id`
+- `agent_name`
+- `output_text`
+- `created_at`
+
+## Request Flow
+
+Main API routes:
+
+- `GET /health`
 - `GET /tasks`
+- `GET /tasks/:id`
 - `POST /tasks`
+- `DELETE /tasks/:id`
 
-It also:
+Flow by operation:
 
-- reads JSON request bodies
-- validates input
-- calls the orchestrator for Growth tasks
-- returns JSON responses
+1. Create
+   `src/http.ts` validates the request, then `src/store.ts` inserts the task into Postgres, updates status, saves the result row, and returns `{ task, result }`.
+2. List
+   `src/http.ts` calls `listTaskItems()` in `src/store.ts`, which reads `tasks` and `task_results`, then returns the UI-friendly `{ task, result? }` shape.
+3. Detail
+   `src/http.ts` calls `getTaskItemById()` in `src/store.ts`, which reads one task row plus its latest result row.
+4. Delete
+   `src/store.ts` deletes from `task_results` and `tasks` in one transaction, then clears the in-memory mirror.
+5. Retry
+   Retry is not a separate backend route. The frontend retries by sending a new `POST /tasks`, which creates a new task row and a new result row.
 
-### `src/store.ts`
+## Files To Know
 
-This file contains the in-memory task storage.
+- `src/index.ts`: starts the HTTP server
+- `src/http.ts`: route handling and request validation
+- `src/db.ts`: loads env and creates the shared `pg` pool
+- `src/store.ts`: Postgres queries plus in-memory fallback
 
-It keeps tasks in a simple array while the server is running.
+## Operational Risk To Know
 
-It also:
+If PostgreSQL is unreachable, the API falls back to in-memory storage in `src/store.ts`.
 
-- creates new `Task` objects using the shared types
-- updates task status after processing
+That means the API may still answer requests, but the behavior is degraded:
 
-## Shared Types Used
+- created tasks are not durably persisted
+- data is lost on restart
+- data is not shared across multiple processes
 
-This API uses the shared types from:
-
-- `packages/shared-types`
-
-Important types used here:
-
-- `Task`
-- `TaskStatus`
-
-## API Flow
-
-The current MVP flow is very simple:
-
-1. A client sends `POST /tasks`
-2. The API validates the input
-3. The API creates a new Growth task
-4. The task is stored in memory
-5. The API sends the task to the orchestrator
-6. The orchestrator routes the task to the Growth agent
-7. The Growth agent returns a mock `TaskResult`
-8. The API updates the task status to `completed`
-9. The API returns both the task and the result
-
-For listing tasks:
-
-1. A client sends `GET /tasks`
-2. The API reads the in-memory task list
-3. The API returns all tasks as JSON
-
-## Current Task Rules
-
-For now, every created task is automatically:
-
-- a `growth` task
-- first given status `pending`
-- then updated to `completed` if the Growth flow succeeds
-
-This keeps the MVP very small and focused.
-
-## Important Beginner Note
-
-Because this API uses in-memory storage, data is temporary.
-
-If the server restarts, the tasks disappear.
-
-That is acceptable for the first MVP because the goal is to understand the full flow before adding a real database.
+For production, treat `DATABASE_URL` and database connectivity as required.

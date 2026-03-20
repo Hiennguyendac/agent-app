@@ -1,7 +1,7 @@
 -- Agent App Growth MVP PostgreSQL schema
 --
 -- This file prepares the first database tables for the current MVP.
--- It does not connect the API yet.
+-- The current API storage layer reads and writes these tables through pg.
 --
 -- Table overview:
 -- 1. tasks
