@@ -81,7 +81,7 @@ pm2 restart agent-api
 Quick API health check on the default port:
 
 ```bash
-curl http://localhost:3001/health
+npm run health
 ```
 
 Expected response:
@@ -91,6 +91,45 @@ Expected response:
   "ok": true
 }
 ```
+
+## Smoke Test
+
+Run these checks after deploy:
+
+1. API health:
+
+```bash
+npm run health
+```
+
+2. Web build exists:
+
+```bash
+test -f apps/web/dist/index.html && echo "web build ok"
+```
+
+3. PM2 process is up:
+
+```bash
+npm run pm2:status
+```
+
+4. Task list route responds:
+
+```bash
+curl -sS http://localhost:3001/tasks
+```
+
+5. Task detail route responds:
+
+Get one id from the task list, then query detail:
+
+```bash
+TASK_ID=$(curl -sS http://localhost:3001/tasks | jq -r '.tasks[0].task.id')
+curl -sS "http://localhost:3001/tasks/$TASK_ID"
+```
+
+If there are no tasks yet, create one from the UI first, then rerun the detail check.
 
 ## Local Dev
 
