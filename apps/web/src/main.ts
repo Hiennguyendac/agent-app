@@ -60,6 +60,10 @@ interface TaskTemplate {
 let currentTasks: Task[] = [];
 let currentTaskItems: TaskListItem[] = [];
 let selectedTaskId: string | null = null;
+let currentMockUserId = loadMockUserId();
+
+const MOCK_USER_STORAGE_KEY = "agent-app.mock-user-id";
+const DEFAULT_MOCK_USER_ID = "user-a";
 
 const TASK_TEMPLATES: Record<string, TaskTemplate> = {
   blogSeo: {
@@ -108,6 +112,25 @@ app.innerHTML = `
           Create one Growth task and see the saved tasks from the MVP API.
         </p>
       </div>
+
+      <section class="mock-user-panel" aria-label="Current mock user">
+        <div class="mock-user-header">
+          <div>
+            <p class="detail-label">Current User</p>
+            <p id="active-user" class="mock-user-active"></p>
+          </div>
+        </div>
+        <div class="field">
+          <label for="mock-user-id">Mock user id</label>
+          <input
+            id="mock-user-id"
+            name="mockUserId"
+            type="text"
+            placeholder="user-a"
+            value="${escapeHtml(currentMockUserId)}"
+          />
+        </div>
+      </section>
 
       <form id="task-form" class="task-form" novalidate>
         <div class="field">
@@ -190,6 +213,8 @@ const audienceInput = document.querySelector<HTMLInputElement>("#audience")!;
 const audienceError =
   document.querySelector<HTMLParagraphElement>("#audience-error")!;
 const templateSelect = document.querySelector<HTMLSelectElement>("#template")!;
+const mockUserInput = document.querySelector<HTMLInputElement>("#mock-user-id")!;
+const activeUser = document.querySelector<HTMLParagraphElement>("#active-user")!;
 
 if (
   !form ||
@@ -206,10 +231,14 @@ if (
   !goalError ||
   !audienceInput ||
   !audienceError ||
-  !templateSelect
+  !templateSelect ||
+  !mockUserInput ||
+  !activeUser
 ) {
   throw new Error("One or more required UI elements were not found");
 }
+
+renderActiveUser();
 
 titleInput.addEventListener("input", () => {
   clearTitleError();
@@ -225,6 +254,20 @@ audienceInput.addEventListener("input", () => {
 
 templateSelect.addEventListener("change", () => {
   applySelectedTemplate(templateSelect.value);
+});
+
+mockUserInput.addEventListener("input", () => {
+  currentMockUserId = normalizeMockUserId(mockUserInput.value);
+  saveMockUserId(currentMockUserId);
+  renderActiveUser();
+});
+
+mockUserInput.addEventListener("change", async () => {
+  currentMockUserId = normalizeMockUserId(mockUserInput.value);
+  mockUserInput.value = currentMockUserId;
+  saveMockUserId(currentMockUserId);
+  renderActiveUser();
+  await loadTasks();
 });
 
 form.addEventListener("submit", async (event) => {
@@ -280,9 +323,9 @@ form.addEventListener("submit", async (event) => {
   try {
     const response = await fetch("/api/tasks", {
       method: "POST",
-      headers: {
+      headers: buildApiHeaders({
         "Content-Type": "application/json"
-      },
+      }),
       body: JSON.stringify(payload)
     });
 
@@ -323,7 +366,9 @@ refreshButton.addEventListener("click", async () => {
  */
 async function loadTasks(): Promise<void> {
   try {
-    const response = await fetch("/api/tasks");
+    const response = await fetch("/api/tasks", {
+      headers: buildApiHeaders()
+    });
 
     if (!response.ok) {
       throw new Error(await readApiError(response, "The API could not load tasks"));
@@ -694,9 +739,9 @@ async function handleRetryTask(
   try {
     const response = await fetch("/api/tasks", {
       method: "POST",
-      headers: {
+      headers: buildApiHeaders({
         "Content-Type": "application/json"
-      },
+      }),
       body: JSON.stringify({
         taskType: "growth",
         title: taskItem.task.title,
@@ -740,7 +785,8 @@ async function handleDeleteTask(
 
   try {
     const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
-      method: "DELETE"
+      method: "DELETE",
+      headers: buildApiHeaders()
     });
 
     if (!response.ok) {
@@ -924,6 +970,46 @@ function escapeHtml(value: string): string {
 
 function normalizeTitle(value: string): string {
   return value.trim().toLocaleLowerCase();
+}
+
+function buildApiHeaders(
+  extraHeaders: Record<string, string> = {}
+): Record<string, string> {
+  const headers = { ...extraHeaders };
+
+  if (currentMockUserId.length > 0) {
+    headers["x-user-id"] = currentMockUserId;
+  }
+
+  return headers;
+}
+
+function loadMockUserId(): string {
+  try {
+    const storedValue = window.localStorage.getItem(MOCK_USER_STORAGE_KEY);
+    return normalizeMockUserId(storedValue ?? DEFAULT_MOCK_USER_ID);
+  } catch {
+    return DEFAULT_MOCK_USER_ID;
+  }
+}
+
+function saveMockUserId(value: string): void {
+  try {
+    window.localStorage.setItem(MOCK_USER_STORAGE_KEY, value);
+  } catch {
+    // Ignore storage write failures and keep using in-memory state.
+  }
+}
+
+function renderActiveUser(): void {
+  activeUser.textContent =
+    currentMockUserId.length > 0
+      ? `Active mock user: ${currentMockUserId}`
+      : "Active mock user: none";
+}
+
+function normalizeMockUserId(value: string): string {
+  return value.trim();
 }
 
 void loadTasks();

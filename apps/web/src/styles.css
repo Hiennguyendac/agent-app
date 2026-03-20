@@ -83,6 +83,24 @@ h3 {
   color: #475569;
 }
 
+.mock-user-panel {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 16px;
+  background: #f8fbff;
+}
+
+.mock-user-header {
+  margin-bottom: 12px;
+}
+
+.mock-user-active {
+  margin: 4px 0 0;
+  color: #334155;
+  font-weight: 600;
+}
+
 .task-form {
   display: grid;
   gap: 16px;
