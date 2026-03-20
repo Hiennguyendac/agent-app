@@ -9,6 +9,8 @@
     "build:web": "npm run build --prefix apps/web",
     "db:check": "npm run check-db --prefix apps/api",
     "db:apply-schema": "npm run apply-schema --prefix apps/api",
+    "db:backup": "mkdir -p backups && pg_dump \"$DATABASE_URL\" -Fc -f \"${BACKUP_FILE:-backups/agent-app-$(date +%Y%m%d-%H%M%S).dump}\"",
+    "db:restore": "test -n \"$RESTORE_FILE\" && pg_restore --clean --if-exists --no-owner --no-privileges -d \"$DATABASE_URL\" \"$RESTORE_FILE\"",
     "api": "npm run dev --prefix apps/api",
     "start:api": "npm run start --prefix apps/api",
     "web": "npm run dev --prefix apps/web",

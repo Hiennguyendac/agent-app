@@ -131,6 +131,55 @@ Production:
 - keep `NODE_ENV=production`
 - keep `ALLOW_INMEMORY_FALLBACK=false`
 
+## Backup And Restore
+
+Use `DATABASE_URL` with standard Postgres tools.
+
+Manual backup with the root script:
+
+```bash
+npm run db:backup
+```
+
+Or specify the output file:
+
+```bash
+BACKUP_FILE=/safe/path/agent-app.dump npm run db:backup
+```
+
+Manual restore:
+
+```bash
+RESTORE_FILE=/safe/path/agent-app.dump npm run db:restore
+```
+
+Direct commands:
+
+```bash
+pg_dump "$DATABASE_URL" -Fc -f backups/agent-app-$(date +%Y%m%d-%H%M%S).dump
+pg_restore --clean --if-exists --no-owner --no-privileges -d "$DATABASE_URL" /safe/path/agent-app.dump
+```
+
+Operational notes:
+
+- do not commit backup files into git
+- keep production backups outside the repo when possible
+- restore is destructive and can overwrite existing data
+- after restore, run `npm run db:check`, restart the API if needed, and verify `/health` plus `/tasks`
+
+Local/dev:
+
+- useful for rehearsing restores and protecting local test data
+
+Production:
+
+- back up before migrations, infra changes, or risky manual operations
+- confirm the target `DATABASE_URL` before restore
+
+Supabase Postgres:
+
+- same dump and restore flow, as long as your Postgres connection and permissions allow it
+
 ## Tables In Use
 
 Schema file:

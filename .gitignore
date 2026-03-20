@@ -12,6 +12,9 @@ build
 !**/.env.example
 *.log
 logs
+backups
+*.dump
+*.sql.gz
 tmp
 .tmp
 .DS_Store

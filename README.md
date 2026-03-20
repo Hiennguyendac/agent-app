@@ -71,6 +71,72 @@ Local/dev usually points `DATABASE_URL` at local Postgres.
 
 Production uses the same schema file, but `DATABASE_URL` should point at your production Postgres or Supabase Postgres before API start/restart.
 
+## Database Backup And Restore
+
+Create a manual backup with `pg_dump` in custom format:
+
+```bash
+npm run db:backup
+```
+
+That writes to `backups/agent-app-YYYYMMDD-HHMMSS.dump` by default.
+
+To choose a file path explicitly:
+
+```bash
+BACKUP_FILE=/safe/path/agent-app-prod.dump npm run db:backup
+```
+
+Equivalent direct command:
+
+```bash
+pg_dump "$DATABASE_URL" -Fc -f backups/agent-app-$(date +%Y%m%d-%H%M%S).dump
+```
+
+Restore from a dump file:
+
+```bash
+RESTORE_FILE=/safe/path/agent-app-prod.dump npm run db:restore
+```
+
+Equivalent direct command:
+
+```bash
+pg_restore --clean --if-exists --no-owner --no-privileges -d "$DATABASE_URL" /safe/path/agent-app-prod.dump
+```
+
+Important warnings:
+
+- restore can overwrite existing data
+- point `DATABASE_URL` at the correct database before restore
+- do not commit backup files into git
+- store production backups outside the repo when possible
+
+After restore:
+
+```bash
+npm run db:check
+npm run health
+curl -sS http://localhost:3001/tasks
+```
+
+Local/dev:
+
+- backing up local Postgres is useful before destructive testing
+- restoring locally is the safest way to rehearse recovery steps
+
+Production:
+
+- take backups before schema or infrastructure changes
+- store backups in a secure location outside the app repo
+- restore to the intended database only after confirming the target `DATABASE_URL`
+
+Supabase Postgres:
+
+- use the same `pg_dump` and `pg_restore` flow with the Supabase Postgres `DATABASE_URL`
+- network access and DB permissions must allow dump/restore operations
+- for high-risk restores, prefer restoring into a separate database first when your environment allows it
+
 ## Start
 
 Start the compiled API directly:
