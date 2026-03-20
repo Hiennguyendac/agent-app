@@ -7,6 +7,8 @@
     "build": "npm run build:api && npm run build:web",
     "build:api": "npm run build --prefix apps/api",
     "build:web": "npm run build --prefix apps/web",
+    "db:check": "npm run check-db --prefix apps/api",
+    "db:apply-schema": "npm run apply-schema --prefix apps/api",
     "api": "npm run dev --prefix apps/api",
     "start:api": "npm run start --prefix apps/api",
     "web": "npm run dev --prefix apps/web",

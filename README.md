@@ -16,6 +16,8 @@ Minimum env for the current production flow:
 ```env
 DATABASE_URL=postgresql://postgres:postgres@db:5432/agentapp
 PORT=3001
+NODE_ENV=production
+ALLOW_INMEMORY_FALLBACK=false
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=gpt-5-mini
 ```
@@ -39,6 +41,35 @@ Build one app:
 npm run build:api
 npm run build:web
 ```
+
+## Database Bootstrap
+
+The API depends on this schema file:
+
+- `infra/sql/001_growth_mvp_schema.sql`
+
+Prepare `DATABASE_URL`, then check connectivity:
+
+```bash
+npm run db:check
+```
+
+Apply the schema:
+
+```bash
+npm run db:apply-schema
+```
+
+Bootstrap from zero:
+
+1. Set `DATABASE_URL`
+2. Run `npm run db:check`
+3. Run `npm run db:apply-schema`
+4. Run `npm run start:api` or restart PM2
+
+Local/dev usually points `DATABASE_URL` at local Postgres.
+
+Production uses the same schema file, but `DATABASE_URL` should point at your production Postgres or Supabase Postgres before API start/restart.
 
 ## Start
 

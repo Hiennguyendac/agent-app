@@ -59,6 +59,49 @@ Notes:
 - `OPENAI_API_KEY` is required when the Growth agent should generate real output.
 - `PORT` controls the API HTTP server and defaults to `3001`.
 
+## Schema Bootstrap
+
+Source schema file:
+
+- `infra/sql/001_growth_mvp_schema.sql`
+
+Apply it with the API package script:
+
+```bash
+npm run apply-schema --prefix apps/api
+```
+
+Or from the repo root:
+
+```bash
+npm run db:apply-schema
+```
+
+Check database connectivity first:
+
+```bash
+npm run check-db --prefix apps/api
+```
+
+Or from the repo root:
+
+```bash
+npm run db:check
+```
+
+Local/dev:
+
+- point `DATABASE_URL` at your local Postgres
+- apply `infra/sql/001_growth_mvp_schema.sql`
+- start the API
+
+Production:
+
+- point `DATABASE_URL` at your production Postgres or Supabase Postgres
+- apply the same schema before starting or restarting the API
+- keep `NODE_ENV=production`
+- keep `ALLOW_INMEMORY_FALLBACK=false`
+
 ## Tables In Use
 
 Schema file:
