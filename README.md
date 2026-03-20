@@ -1,41 +1,17 @@
 # Agent App
 
-Monorepo for a small task dashboard and API.
+Monorepo for the current production task flow.
 
-## Apps
+## Production Apps
 
-- `apps/web`: Vite frontend for creating and viewing Growth tasks
-- `apps/api`: Node/TypeScript HTTP API
-- `apps/orchestrator`: task routing logic
-- `apps/agent-growth`: Growth content agent
-- `packages/shared-types`: shared TypeScript types
+- `apps/api`: Node/TypeScript API, runs under PM2
+- `apps/web`: Vite frontend, built to static assets in `apps/web/dist`
 
-## Local Run
+## Env
 
-Install dependencies from the repo root:
+Use `infra/env/.env.example` as the safe template.
 
-```bash
-npm install
-```
-
-Start both web and API:
-
-```bash
-npm run dev
-```
-
-Start one app at a time:
-
-```bash
-npm run api
-npm run web
-```
-
-## Required Env
-
-Use `infra/env/.env.example` as the safe template for local env values.
-
-Minimum variables used by the current task flow:
+Minimum env for the current production flow:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@db:5432/agentapp
@@ -46,41 +22,63 @@ OPENAI_MODEL=gpt-5-mini
 
 Notes:
 
-- `OPENAI_API_KEY` is required only when you want real AI-generated Growth output.
-- Never commit real secrets to `.env.example` or README files.
-- The root `.env` is gitignored in this repo.
+- Do not commit real secrets to `.env.example` or README files.
+- The root `.env` is gitignored.
 
 ## Build
 
-Build the API:
+Build everything:
 
 ```bash
-npm run build --prefix apps/api
+npm run build
 ```
 
-Build the web app:
+Build one app:
 
 ```bash
-npm run build --prefix apps/web
+npm run build:api
+npm run build:web
 ```
 
 ## Start
 
-Start the compiled API:
+Start the compiled API directly:
 
 ```bash
-npm run start --prefix apps/api
+npm run start:api
 ```
 
-For the web app in local development, use:
+The web app is a static build. Serve `apps/web/dist` with your web server.
+
+## PM2
+
+Start the API with the included ecosystem file:
 
 ```bash
-npm run dev --prefix apps/web
+npm run pm2:start
 ```
 
-## Health
+Restart after deploy:
 
-If the API is running locally on the default port:
+```bash
+npm run pm2:restart
+```
+
+Useful PM2 logs command:
+
+```bash
+npm run pm2:logs
+```
+
+Equivalent direct PM2 command:
+
+```bash
+pm2 restart agent-api
+```
+
+## Health Check
+
+Quick API health check on the default port:
 
 ```bash
 curl http://localhost:3001/health
@@ -92,4 +90,18 @@ Expected response:
 {
   "ok": true
 }
+```
+
+## Local Dev
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run API and web together:
+
+```bash
+npm run dev
 ```

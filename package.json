@@ -4,9 +4,16 @@
   "private": true,
   "description": "Multi-agent application project",
   "scripts": {
+    "build": "npm run build:api && npm run build:web",
+    "build:api": "npm run build --prefix apps/api",
+    "build:web": "npm run build --prefix apps/web",
     "api": "npm run dev --prefix apps/api",
+    "start:api": "npm run start --prefix apps/api",
     "web": "npm run dev --prefix apps/web",
-    "dev": "concurrently -k -n api,web -c blue,green \"npm run api\" \"npm run web\""
+    "dev": "concurrently -k -n api,web -c blue,green \"npm run api\" \"npm run web\"",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:restart": "pm2 restart agent-api",
+    "pm2:logs": "pm2 logs agent-api"
   },
   "dependencies": {
     "dotenv": "^17.3.1",

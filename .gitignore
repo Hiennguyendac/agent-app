@@ -11,6 +11,9 @@ build
 !.env.example
 !**/.env.example
 *.log
+logs
+tmp
+.tmp
 .DS_Store
 __pycache__
 .venv
