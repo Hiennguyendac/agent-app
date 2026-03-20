@@ -3,7 +3,7 @@ import type {
   TaskResult,
   TaskStatus
 } from "../../../packages/shared-types/index.js";
-import { getDbPool } from "./db.js";
+import { getDbPool, handleStorageFailure } from "./db.js";
 
 /**
  * Storage strategy:
@@ -57,7 +57,7 @@ export async function listTasks(): Promise<Task[]> {
     syncTasksMemory(dbTasks);
     return dbTasks;
   } catch (error) {
-    console.error("[api] listTasks() falling back to memory:", error);
+    handleStorageFailure("listTasks()", error);
     return tasks;
   }
 }
@@ -106,7 +106,7 @@ export async function listTaskItems(): Promise<TaskListItem[]> {
       result: taskResults.get(task.id)
     }));
   } catch (error) {
-    console.error("[api] listTaskItems() falling back to memory:", error);
+    handleStorageFailure("listTaskItems()", error);
     return tasks.map((task) => ({
       task,
       result: taskResults.get(task.id)
@@ -174,7 +174,7 @@ export async function getTaskItemById(
       result
     };
   } catch (error) {
-    console.error("[api] getTaskItemById() falling back to memory:", error);
+    handleStorageFailure("getTaskItemById()", error);
 
     const task = tasks.find((item) => item.id === taskId);
 
@@ -208,7 +208,7 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
       `[api] Stored task ${task.id} with title "${task.title}" in PostgreSQL`
     );
   } catch (error) {
-    console.error("[api] createTask() PostgreSQL insert failed, using memory:", error);
+    handleStorageFailure("createTask()", error);
   }
 
   upsertTaskInMemory(task);
@@ -227,7 +227,7 @@ export async function updateTaskStatus(
       return updatedTask;
     }
   } catch (error) {
-    console.error("[api] updateTaskStatus() PostgreSQL update failed, using memory:", error);
+    handleStorageFailure("updateTaskStatus()", error);
   }
 
   const task = tasks.find((item) => item.id === taskId);
@@ -244,7 +244,7 @@ export async function saveTaskResult(result: TaskResult): Promise<void> {
   try {
     await insertTaskResultIntoPostgres(result);
   } catch (error) {
-    console.error("[api] saveTaskResult() PostgreSQL insert failed, using memory:", error);
+    handleStorageFailure("saveTaskResult()", error);
   }
 
   taskResults.set(result.taskId, result);
@@ -256,7 +256,7 @@ export async function deleteTask(taskId: string): Promise<boolean> {
   try {
     deletedInPostgres = await deleteTaskInPostgres(taskId);
   } catch (error) {
-    console.error("[api] deleteTask() PostgreSQL delete failed, using memory:", error);
+    handleStorageFailure("deleteTask()", error);
   }
 
   const deletedInMemory = deleteTaskFromMemory(taskId);

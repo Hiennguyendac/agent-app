@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { ensureStorageReadyForStartup } from "./db.js";
 import { handleRequest } from "./http.js";
 
 /**
@@ -9,58 +10,67 @@ import { handleRequest } from "./http.js";
 
 const port = Number(process.env.PORT || 3001);
 
-const server = createServer((req, res) => {
-  if (req.url === "/" && req.method === "GET") {
-    res.writeHead(200, {
-      "Content-Type": "application/json"
-    });
-    res.end(
-      JSON.stringify(
-        {
-          ok: true,
-          service: "agent-api"
-        },
-        null,
-        2
-      )
-    );
-    return;
-  }
+async function startServer(): Promise<void> {
+  await ensureStorageReadyForStartup();
 
-  if (req.url === "/health" && req.method === "GET") {
-    res.writeHead(200, {
-      "Content-Type": "application/json"
-    });
-    res.end(
-      JSON.stringify(
-        {
-          ok: true
-        },
-        null,
-        2
-      )
-    );
-    return;
-  }
+  const server = createServer((req, res) => {
+    if (req.url === "/" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "application/json"
+      });
+      res.end(
+        JSON.stringify(
+          {
+            ok: true,
+            service: "agent-api"
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
 
-  handleRequest(req, res).catch((error: unknown) => {
-    console.error("Unexpected API error:", error);
+    if (req.url === "/health" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "application/json"
+      });
+      res.end(
+        JSON.stringify(
+          {
+            ok: true
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
 
-    res.writeHead(500, {
-      "Content-Type": "application/json"
+    handleRequest(req, res).catch((error: unknown) => {
+      console.error("Unexpected API error:", error);
+
+      res.writeHead(500, {
+        "Content-Type": "application/json"
+      });
+      res.end(
+        JSON.stringify(
+          {
+            error: "Internal server error"
+          },
+          null,
+          2
+        )
+      );
     });
-    res.end(
-      JSON.stringify(
-        {
-          error: "Internal server error"
-        },
-        null,
-        2
-      )
-    );
   });
-});
 
-server.listen(port, () => {
-  console.log(`API server is running on http://localhost:${port}`);
+  server.listen(port, () => {
+    console.log(`API server is running on http://localhost:${port}`);
+  });
+}
+
+startServer().catch((error: unknown) => {
+  console.error("[api] Startup failed:", error);
+  process.exit(1);
 });

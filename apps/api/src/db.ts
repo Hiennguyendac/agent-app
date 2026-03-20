@@ -20,6 +20,38 @@ loadEnvironmentVariables();
 
 let pool: Pool | null = null;
 
+export function isProductionRuntime(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+export function isInMemoryFallbackAllowed(): boolean {
+  const rawValue = process.env.ALLOW_INMEMORY_FALLBACK?.trim().toLowerCase();
+
+  if (rawValue === "true") {
+    return true;
+  }
+
+  if (rawValue === "false") {
+    return false;
+  }
+
+  return !isProductionRuntime();
+}
+
+export function logStorageMode(): void {
+  const databaseUrl = process.env.DATABASE_URL;
+  const runtimeLabel = isProductionRuntime() ? "production" : "non-production";
+  const fallbackLabel = isInMemoryFallbackAllowed() ? "enabled" : "disabled";
+
+  console.log(
+    `[api] Storage mode: PostgreSQL primary, in-memory fallback ${fallbackLabel} (${runtimeLabel}).`
+  );
+
+  if (!databaseUrl) {
+    console.warn("[api] DATABASE_URL is not set.");
+  }
+}
+
 /**
  * Returns the PostgreSQL connection pool for the API.
  *
@@ -60,6 +92,49 @@ export async function testDatabaseConnection(): Promise<boolean> {
   } finally {
     client.release();
   }
+}
+
+export async function ensureStorageReadyForStartup(): Promise<void> {
+  logStorageMode();
+
+  if (isInMemoryFallbackAllowed()) {
+    console.warn(
+      "[api] In-memory fallback is allowed. PostgreSQL will still be used when DATABASE_URL is available."
+    );
+    return;
+  }
+
+  if (!process.env.DATABASE_URL) {
+    throw new Error(
+      "DATABASE_URL is required because in-memory fallback is disabled."
+    );
+  }
+
+  await testDatabaseConnection();
+  console.log("[api] PostgreSQL startup check passed.");
+}
+
+export function handleStorageFailure(operation: string, error: unknown): void {
+  if (isInMemoryFallbackAllowed()) {
+    console.warn(
+      `[api] ${operation} PostgreSQL path failed. Falling back to in-memory storage.`,
+      error
+    );
+    return;
+  }
+
+  console.error(
+    `[api] ${operation} PostgreSQL path failed and in-memory fallback is disabled.`,
+    error
+  );
+
+  throw error instanceof Error
+    ? new Error(
+        `${operation} failed because PostgreSQL is unavailable and in-memory fallback is disabled. ${error.message}`
+      )
+    : new Error(
+        `${operation} failed because PostgreSQL is unavailable and in-memory fallback is disabled.`
+      );
 }
 
 function loadEnvironmentVariables(): void {

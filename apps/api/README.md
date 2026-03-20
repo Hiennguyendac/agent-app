@@ -8,13 +8,35 @@ The API now uses PostgreSQL as the primary data store through `DATABASE_URL`.
 
 It does not use a Supabase client library directly. If you use Supabase, the API still talks to it as plain Postgres through the `pg` driver and a normal connection string.
 
-There is still an in-memory fallback in `src/store.ts` when PostgreSQL is unavailable.
+There is still an in-memory fallback in `src/store.ts`, but it is now controlled explicitly by runtime environment.
 
 That fallback is useful for local recovery, but it is not a stable production store because:
 
 - data is process-local
 - data disappears on restart
 - multiple API instances would diverge
+
+## Runtime Behavior
+
+Local and dev:
+
+- in-memory fallback is allowed by default
+- if PostgreSQL is available, the API still uses PostgreSQL first
+- if PostgreSQL fails, the API can continue with in-memory storage
+
+Production:
+
+- in-memory fallback is disabled by default
+- `DATABASE_URL` must be set
+- PostgreSQL must be reachable during startup
+- if PostgreSQL is unavailable, the API exits instead of silently serving degraded data
+
+You can override the fallback policy explicitly:
+
+```env
+ALLOW_INMEMORY_FALLBACK=true
+ALLOW_INMEMORY_FALLBACK=false
+```
 
 ## Required Env
 
@@ -23,13 +45,17 @@ Minimum env for stable production behavior:
 ```env
 DATABASE_URL=postgresql://...
 PORT=3001
+NODE_ENV=production
+ALLOW_INMEMORY_FALLBACK=false
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=gpt-5-mini
 ```
 
 Notes:
 
-- `DATABASE_URL` is required for the real persisted data path.
+- `DATABASE_URL` is required for the production persisted data path.
+- `NODE_ENV=production` disables fallback by default even if `ALLOW_INMEMORY_FALLBACK` is omitted.
+- `ALLOW_INMEMORY_FALLBACK=false` makes the production requirement explicit.
 - `OPENAI_API_KEY` is required when the Growth agent should generate real output.
 - `PORT` controls the API HTTP server and defaults to `3001`.
 
@@ -95,7 +121,7 @@ Flow by operation:
 
 ## Operational Risk To Know
 
-If PostgreSQL is unreachable, the API falls back to in-memory storage in `src/store.ts`.
+If PostgreSQL is unreachable and fallback is allowed, the API falls back to in-memory storage in `src/store.ts`.
 
 That means the API may still answer requests, but the behavior is degraded:
 
@@ -103,4 +129,4 @@ That means the API may still answer requests, but the behavior is degraded:
 - data is lost on restart
 - data is not shared across multiple processes
 
-For production, treat `DATABASE_URL` and database connectivity as required.
+For production, treat `DATABASE_URL`, database connectivity, and fallback policy as required startup conditions.
