@@ -57,13 +57,13 @@ interface TaskTemplate {
   notes: string;
 }
 
+const MOCK_USER_STORAGE_KEY = "agent-app.mock-user-id";
+const DEFAULT_MOCK_USER_ID = "user-a";
+
 let currentTasks: Task[] = [];
 let currentTaskItems: TaskListItem[] = [];
 let selectedTaskId: string | null = null;
 let currentMockUserId = loadMockUserId();
-
-const MOCK_USER_STORAGE_KEY = "agent-app.mock-user-id";
-const DEFAULT_MOCK_USER_ID = "user-a";
 
 const TASK_TEMPLATES: Record<string, TaskTemplate> = {
   blogSeo: {
