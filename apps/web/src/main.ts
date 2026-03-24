@@ -979,7 +979,7 @@ function normalizeTitle(value: string): string {
 }
 
 function getOwnerLabel(ownerId?: string): string {
-  return ownerId && ownerId.trim().length > 0 ? `Owner: ${ownerId}` : "Owner: unowned";
+  return ownerId && ownerId.trim().length > 0 ? ownerId : "unowned";
 }
 
 function buildApiHeaders(

@@ -41,16 +41,22 @@ export async function handleRequest(
   }
 
   if (method === "GET" && url === "/tasks") {
-    logInfo("Listing tasks");
+    logInfo("Listing tasks", {
+      userId: accessContext.userId
+    });
     sendJson(res, 200, {
       tasks: await listTaskItems(accessContext)
-    }, startedAtMs, method, url);
+    }, startedAtMs, method, url, {
+      userId: accessContext.userId
+    });
     return;
   }
 
   if (method === "POST" && url === "/tasks") {
     const body = await readJsonBody(req);
-    logInfo("Received task creation request");
+    logInfo("Received task creation request", {
+      userId: accessContext.userId
+    });
 
     if (!isCreateTaskInput(body)) {
       sendJson(res, 400, {
@@ -76,7 +82,8 @@ export async function handleRequest(
         task: updatedTask,
         result
       }, startedAtMs, method, url, {
-        taskId: updatedTask.id
+        taskId: updatedTask.id,
+        userId: accessContext.userId
       });
     } catch (error: unknown) {
       const failedTask = (await updateTaskStatus(task.id, "failed")) ?? task;
@@ -91,7 +98,8 @@ export async function handleRequest(
         error:
           error instanceof Error ? error.message : "Failed to process task"
       }, startedAtMs, method, url, {
-        taskId: failedTask.id
+        taskId: failedTask.id,
+        userId: accessContext.userId
       });
     }
     return;
@@ -104,13 +112,15 @@ export async function handleRequest(
       sendJson(res, 404, {
         error: "Task not found"
       }, startedAtMs, method, url, {
-        taskId
+        taskId,
+        userId: accessContext.userId
       });
       return;
     }
 
     sendJson(res, 200, taskItem, startedAtMs, method, url, {
-      taskId
+      taskId,
+      userId: accessContext.userId
     });
     return;
   }
@@ -122,19 +132,22 @@ export async function handleRequest(
       sendJson(res, 404, {
         error: "Task not found"
       }, startedAtMs, method, url, {
-        taskId
+        taskId,
+        userId: accessContext.userId
       });
       return;
     }
 
     logInfo("Task deleted", {
-      taskId
+      taskId,
+      userId: accessContext.userId
     });
 
     sendJson(res, 200, {
       success: true
     }, startedAtMs, method, url, {
-      taskId
+      taskId,
+      userId: accessContext.userId
     });
     return;
   }

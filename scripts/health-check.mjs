@@ -1,32 +1,44 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { config as loadEnv } from "dotenv";
+import "dotenv/config";
 
-loadRootEnv();
+const port = process.env.PORT || "3003";
+const url = process.env.HEALTHCHECK_URL || `http://127.0.0.1:${port}/health`;
 
-const port = process.env.PORT || "3001";
-const url = `http://localhost:${port}/health`;
+const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 5000);
 
 try {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    method: "GET",
+    signal: controller.signal,
+    headers: {
+      Accept: "application/json"
+    }
+  });
+
+  clearTimeout(timeout);
 
   if (!response.ok) {
-    console.error(`[health] Request failed with status ${response.status}: ${url}`);
+    console.error(`[health] Non-OK response: ${response.status} ${response.statusText}`);
     process.exit(1);
   }
 
-  const body = await response.text();
-  console.log(body);
+  const data = await response.json().catch(() => ({}));
+
+  const looksHealthy =
+    data?.ok === true ||
+    data?.status === "ok";
+
+  if (!looksHealthy) {
+    console.error(`[health] Unexpected payload from ${url}`);
+    console.error(data);
+    process.exit(1);
+  }
+
+  console.log(`[health] OK: ${url}`);
+  process.exit(0);
 } catch (error) {
+  clearTimeout(timeout);
   console.error(`[health] Request failed: ${url}`);
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
-}
-
-function loadRootEnv() {
-  const rootEnvPath = resolve(process.cwd(), ".env");
-
-  if (existsSync(rootEnvPath)) {
-    loadEnv({ path: rootEnvPath });
-  }
 }
