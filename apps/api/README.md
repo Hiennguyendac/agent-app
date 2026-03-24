@@ -207,11 +207,14 @@ Supabase Postgres:
 Schema file:
 
 - `infra/sql/001_growth_mvp_schema.sql`
+- `infra/sql/002_add_task_owner.sql`
+- `infra/sql/003_add_auth_sessions.sql`
 
 Current tables:
 
 - `tasks`
 - `task_results`
+- `auth_sessions`
 
 `tasks` stores the main task row:
 
@@ -237,10 +240,34 @@ Current tables:
 Main API routes:
 
 - `GET /health`
+- `GET /auth/session`
+- `POST /auth/login`
+- `POST /auth/logout`
 - `GET /tasks`
 - `GET /tasks/:id`
 - `POST /tasks`
 - `DELETE /tasks/:id`
+
+## Auth V1
+
+Auth v1 is a minimal server-side session using an HttpOnly cookie and a PostgreSQL-backed session store.
+
+Request user resolution priority:
+
+1. session cookie
+2. `x-user-id` header
+3. `MOCK_USER_ID` or `DEFAULT_USER_ID`
+
+This keeps session-backed identity as the preferred real path while preserving the mock-user fallback for local testing and debugging.
+
+`auth_sessions` stores:
+
+- `id`
+- `user_id`
+- `expires_at`
+- `created_at`
+
+This lets session-backed login survive API or PM2 restarts as long as PostgreSQL is available.
 
 Flow by operation:
 

@@ -50,6 +50,11 @@ interface DeleteTaskResponse {
   success: boolean;
 }
 
+interface SessionResponse {
+  authenticated: boolean;
+  userId: string | null;
+}
+
 interface TaskTemplate {
   label: string;
   title: string;
@@ -59,12 +64,13 @@ interface TaskTemplate {
 }
 
 const MOCK_USER_STORAGE_KEY = "agent-app.mock-user-id";
-const DEFAULT_MOCK_USER_ID = "user-a";
+const DEFAULT_MOCK_USER_ID = "";
 
 let currentTasks: Task[] = [];
 let currentTaskItems: TaskListItem[] = [];
 let selectedTaskId: string | null = null;
 let currentMockUserId = loadMockUserId();
+let currentSessionUserId: string | null = null;
 
 const TASK_TEMPLATES: Record<string, TaskTemplate> = {
   blogSeo: {
@@ -117,7 +123,36 @@ app.innerHTML = `
       <section class="mock-user-panel" aria-label="Current mock user">
         <div class="mock-user-header">
           <div>
-            <p class="detail-label">Current User</p>
+            <p class="detail-label">Auth v1</p>
+            <p id="session-user" class="mock-user-active">Session user: checking...</p>
+            <p id="identity-source" class="identity-source-note">Active identity: checking...</p>
+          </div>
+        </div>
+        <div class="auth-panel-row">
+          <div class="field">
+            <label for="username">Username</label>
+            <input
+              id="username"
+              name="username"
+              type="text"
+              placeholder="alice"
+            />
+          </div>
+          <div class="auth-actions">
+            <button id="login-button" class="primary-button" type="button">
+              Log In
+            </button>
+            <button id="logout-button" class="secondary-button" type="button">
+              Log Out
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="mock-user-panel" aria-label="Mock user fallback">
+        <div class="mock-user-header">
+          <div>
+            <p class="detail-label">Dev Fallback</p>
             <p id="active-user" class="mock-user-active"></p>
           </div>
         </div>
@@ -216,6 +251,12 @@ const audienceError =
 const templateSelect = document.querySelector<HTMLSelectElement>("#template")!;
 const mockUserInput = document.querySelector<HTMLInputElement>("#mock-user-id")!;
 const activeUser = document.querySelector<HTMLParagraphElement>("#active-user")!;
+const sessionUser = document.querySelector<HTMLParagraphElement>("#session-user")!;
+const identitySource =
+  document.querySelector<HTMLParagraphElement>("#identity-source")!;
+const usernameInput = document.querySelector<HTMLInputElement>("#username")!;
+const loginButton = document.querySelector<HTMLButtonElement>("#login-button")!;
+const logoutButton = document.querySelector<HTMLButtonElement>("#logout-button")!;
 
 if (
   !form ||
@@ -234,12 +275,18 @@ if (
   !audienceError ||
   !templateSelect ||
   !mockUserInput ||
-  !activeUser
+  !activeUser ||
+  !sessionUser ||
+  !identitySource ||
+  !usernameInput ||
+  !loginButton ||
+  !logoutButton
 ) {
   throw new Error("One or more required UI elements were not found");
 }
 
 renderActiveUser();
+renderSessionUser();
 
 titleInput.addEventListener("input", () => {
   clearTitleError();
@@ -269,6 +316,80 @@ mockUserInput.addEventListener("change", async () => {
   saveMockUserId(currentMockUserId);
   renderActiveUser();
   await loadTasks();
+});
+
+loginButton.addEventListener("click", async () => {
+  const username = usernameInput.value.trim();
+
+  if (username.length === 0) {
+    setStatus("Username is required to log in.", "error");
+    return;
+  }
+
+  setAuthButtonsDisabled(true);
+  setStatus("Logging in...", "loading");
+
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        username
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "The API could not log in"));
+    }
+
+    const data = (await response.json()) as SessionResponse;
+    currentSessionUserId = data.userId;
+    renderSessionUser();
+    usernameInput.value = "";
+    await loadTasks();
+    setStatus("Logged in successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while logging in.",
+      "error"
+    );
+  } finally {
+    setAuthButtonsDisabled(false);
+  }
+});
+
+logoutButton.addEventListener("click", async () => {
+  setAuthButtonsDisabled(true);
+  setStatus("Logging out...", "loading");
+
+  try {
+    const response = await fetch("/api/auth/logout", {
+      method: "POST"
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "The API could not log out"));
+    }
+
+    const data = (await response.json()) as SessionResponse;
+    currentSessionUserId = data.userId;
+    renderSessionUser();
+    await loadTasks();
+    setStatus("Logged out successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while logging out.",
+      "error"
+    );
+  } finally {
+    setAuthButtonsDisabled(false);
+  }
 });
 
 form.addEventListener("submit", async (event) => {
@@ -1014,12 +1135,64 @@ function saveMockUserId(value: string): void {
 function renderActiveUser(): void {
   activeUser.textContent =
     currentMockUserId.length > 0
-      ? `Active mock user: ${currentMockUserId}`
-      : "Active mock user: none";
+      ? `Mock user header: ${currentMockUserId}`
+      : "Mock user header: off";
+  renderIdentitySource();
+}
+
+function renderSessionUser(): void {
+  sessionUser.textContent =
+    currentSessionUserId && currentSessionUserId.length > 0
+      ? `Session user: ${currentSessionUserId}`
+      : "Session user: not logged in";
+  renderIdentitySource();
+}
+
+function renderIdentitySource(): void {
+  if (currentSessionUserId && currentSessionUserId.length > 0) {
+    identitySource.textContent =
+      currentMockUserId.length > 0
+        ? `Active identity: ${currentSessionUserId} (session). Dev fallback ${currentMockUserId} is ignored while the session is active.`
+        : `Active identity: ${currentSessionUserId} (session).`;
+    return;
+  }
+
+  if (currentMockUserId.length > 0) {
+    identitySource.textContent =
+      `Active identity: ${currentMockUserId} (dev fallback header). No active session.`;
+    return;
+  }
+
+  identitySource.textContent = "Active identity: none. No active session.";
+}
+
+function setAuthButtonsDisabled(isDisabled: boolean): void {
+  loginButton.disabled = isDisabled;
+  logoutButton.disabled = isDisabled;
 }
 
 function normalizeMockUserId(value: string): string {
   return value.trim();
 }
 
-void loadTasks();
+async function loadSession(): Promise<void> {
+  try {
+    const response = await fetch("/api/auth/session");
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "The API could not load the session"));
+    }
+
+    const data = (await response.json()) as SessionResponse;
+    currentSessionUserId = data.userId;
+    renderSessionUser();
+  } catch {
+    currentSessionUserId = null;
+    renderSessionUser();
+  }
+}
+
+void (async () => {
+  await loadSession();
+  await loadTasks();
+})();

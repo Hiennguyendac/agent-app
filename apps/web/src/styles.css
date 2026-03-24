@@ -95,10 +95,27 @@ h3 {
   margin-bottom: 12px;
 }
 
+.auth-panel-row {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .mock-user-active {
   margin: 4px 0 0;
   color: #334155;
   font-weight: 600;
+}
+
+.identity-source-note {
+  margin: 8px 0 0;
+  color: #475569;
+  font-size: 0.94rem;
 }
 
 .task-form {

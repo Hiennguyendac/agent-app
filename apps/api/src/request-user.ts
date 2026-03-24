@@ -1,14 +1,17 @@
 import type { IncomingMessage } from "node:http";
+import { getSessionUserId } from "./session.js";
 
 export interface TaskAccessContext {
   enforceOwnership: boolean;
   userId: string | null;
 }
 
-export function resolveTaskAccessContext(req: IncomingMessage): TaskAccessContext {
+export async function resolveTaskAccessContext(
+  req: IncomingMessage
+): Promise<TaskAccessContext> {
   return {
     enforceOwnership: isTaskOwnershipEnforced(),
-    userId: resolveRequestUserId(req)
+    userId: await resolveRequestUserId(req)
   };
 }
 
@@ -16,7 +19,15 @@ export function isTaskOwnershipEnforced(): boolean {
   return process.env.ENFORCE_TASK_OWNERSHIP === "true";
 }
 
-export function resolveRequestUserId(req: IncomingMessage): string | null {
+export async function resolveRequestUserId(
+  req: IncomingMessage
+): Promise<string | null> {
+  const userIdFromSession = await getSessionUserId(req);
+
+  if (userIdFromSession) {
+    return userIdFromSession;
+  }
+
   const headerValue = req.headers["x-user-id"];
   const normalizedHeaderValue = Array.isArray(headerValue)
     ? headerValue[0]

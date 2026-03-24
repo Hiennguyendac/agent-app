@@ -210,6 +210,47 @@ Expected response:
 }
 ```
 
+## Auth V1
+
+The current v1 auth path is a minimal server-side session with an HttpOnly cookie.
+
+Auth endpoints:
+
+- `POST /auth/login`
+- `POST /auth/logout`
+- `GET /auth/session`
+
+Auth sessions are now stored in PostgreSQL so login state survives API restarts in production.
+
+Request user resolution priority:
+
+1. session cookie
+2. `x-user-id` header for dev/testing
+3. `MOCK_USER_ID` or `DEFAULT_USER_ID`
+
+Local test flow:
+
+```bash
+curl -i -c /tmp/agent-app.cookies -H 'Content-Type: application/json' \
+  -d '{"username":"alice"}' http://127.0.0.1:3003/auth/login
+curl -b /tmp/agent-app.cookies http://127.0.0.1:3003/auth/session
+curl -b /tmp/agent-app.cookies http://127.0.0.1:3003/tasks
+curl -i -b /tmp/agent-app.cookies -X POST http://127.0.0.1:3003/auth/logout
+```
+
+Session/ownership smoke test:
+
+```bash
+npm run smoke:session-ownership
+```
+
+To also verify session persistence across a PM2 restart:
+
+```bash
+SMOKE_RESTART_COMMAND="pm2 restart ecosystem.config.js --only agent-api --update-env" \
+  npm run smoke:session-ownership
+```
+
 ## Smoke Test
 
 Run these checks after deploy:

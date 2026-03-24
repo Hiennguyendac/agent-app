@@ -3,6 +3,13 @@ import { routeTask } from "../../orchestrator/src/index.js";
 import { logError, logInfo, logRequest } from "./log.js";
 import { resolveTaskAccessContext } from "./request-user.js";
 import {
+  buildClearedSessionCookieHeader,
+  buildSessionCookieHeader,
+  clearSession,
+  createSession,
+  getSessionUserId
+} from "./session.js";
+import {
   createTask,
   deleteTaskWithAccess,
   getTaskItemById,
@@ -31,12 +38,105 @@ export async function handleRequest(
   const url = req.url ?? "/";
   const startedAtMs = Date.now();
   const taskId = getTaskIdFromUrl(url);
-  const accessContext = resolveTaskAccessContext(req);
+  const accessContext = await resolveTaskAccessContext(req);
+  const sessionUserId = await getSessionUserId(req);
 
   if (method === "GET" && url === "/health") {
     sendJson(res, 200, {
       status: "ok"
     }, startedAtMs, method, url);
+    return;
+  }
+
+  if (method === "GET" && url === "/auth/session") {
+    sendJson(
+      res,
+      200,
+      {
+        authenticated: sessionUserId !== null,
+        userId: sessionUserId
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: sessionUserId
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && url === "/auth/login") {
+    const body = await readJsonBody(req);
+    const username = getLoginUsername(body);
+
+    if (!username) {
+      sendJson(
+        res,
+        400,
+        {
+          error: "Field 'username' is required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: null
+        }
+      );
+      return;
+    }
+
+    const sessionId = await createSession(username);
+
+    logInfo("User logged in", {
+      userId: username
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        authenticated: true,
+        userId: username
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: username
+      },
+      {
+        "Set-Cookie": buildSessionCookieHeader(sessionId)
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && url === "/auth/logout") {
+    await clearSession(req);
+
+    logInfo("User logged out", {
+      userId: sessionUserId
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        authenticated: false,
+        userId: null
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: sessionUserId
+      },
+      {
+        "Set-Cookie": buildClearedSessionCookieHeader()
+      }
+    );
     return;
   }
 
@@ -162,6 +262,26 @@ function getTaskIdFromUrl(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+function getLoginUsername(body: unknown): string | null {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+
+  const username = (body as { username?: unknown }).username;
+
+  if (typeof username !== "string") {
+    return null;
+  }
+
+  const normalizedUsername = username.trim();
+
+  if (normalizedUsername.length === 0) {
+    return null;
+  }
+
+  return normalizedUsername.slice(0, 64);
+}
+
 /**
  * Reads the request body and converts it from JSON into a JavaScript object.
  */
@@ -242,10 +362,12 @@ function sendJson(
   startedAtMs?: number,
   method?: string,
   path?: string,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
+  extraHeaders?: Record<string, string>
 ): void {
   res.writeHead(statusCode, {
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    ...extraHeaders
   });
   res.end(JSON.stringify(payload, null, 2));
 

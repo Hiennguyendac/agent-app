@@ -13,7 +13,9 @@ module.exports = {
       max_restarts: 10,
       env: {
         NODE_ENV: "production",
-        ALLOW_INMEMORY_FALLBACK: "false"
+        PORT: "3003",
+        ALLOW_INMEMORY_FALLBACK: "false",
+        ENFORCE_TASK_OWNERSHIP: "true"
       }
     }
   ]
