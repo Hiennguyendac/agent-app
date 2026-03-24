@@ -44,6 +44,13 @@ export interface Task {
   notes?: string;
 
   /**
+   * Optional task owner identifier for future multi-user support.
+   *
+   * Existing tasks may not have an owner yet.
+   */
+  ownerId?: string;
+
+  /**
    * The current state of the task.
    */
   status: TaskStatus;

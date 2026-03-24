@@ -221,6 +221,7 @@ export async function createTask(
     goal: input.goal,
     audience: input.audience,
     notes: input.notes,
+    ownerId: ownerId ?? undefined,
     status: INITIAL_TASK_STATUS,
     createdAt: new Date().toISOString()
   };
@@ -442,6 +443,7 @@ function mapTaskRowToTask(row: any): Task {
     goal: row.goal,
     audience: row.audience,
     notes: row.notes ?? undefined,
+    ownerId: row.owner_id ?? undefined,
     status: row.status,
     createdAt: row.created_at
   };

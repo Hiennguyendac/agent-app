@@ -16,6 +16,7 @@ interface Task {
   goal: string;
   audience: string;
   notes?: string;
+  ownerId?: string;
   status: TaskStatus;
   createdAt: string;
 }
@@ -424,6 +425,7 @@ function renderTaskList(tasks: TaskListItem[]): void {
             </span>
           </div>
           <p><strong>Task Type:</strong> ${escapeHtml(task.task.taskType)}</p>
+          <p><strong>Owner:</strong> ${escapeHtml(getOwnerLabel(task.task.ownerId))}</p>
           <p><strong>Created At:</strong> ${formatDate(task.task.createdAt)}</p>
           <button
             class="secondary-button task-detail-button"
@@ -641,6 +643,10 @@ function renderTaskDetail(taskItem: TaskListItem): string {
         <div>
           <p class="detail-label">Created Time</p>
           <p class="detail-value">${formatDate(taskItem.task.createdAt)}</p>
+        </div>
+        <div>
+          <p class="detail-label">Owner</p>
+          <p class="detail-value owner-badge">${escapeHtml(getOwnerLabel(taskItem.task.ownerId))}</p>
         </div>
       </div>
 
@@ -970,6 +976,10 @@ function escapeHtml(value: string): string {
 
 function normalizeTitle(value: string): string {
   return value.trim().toLocaleLowerCase();
+}
+
+function getOwnerLabel(ownerId?: string): string {
+  return ownerId && ownerId.trim().length > 0 ? `Owner: ${ownerId}` : "Owner: unowned";
 }
 
 function buildApiHeaders(
