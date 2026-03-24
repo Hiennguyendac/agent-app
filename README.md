@@ -249,6 +249,14 @@ curl -sS "http://localhost:${PORT:-3003}/tasks/$TASK_ID"
 
 If there are no tasks yet, create one from the UI first, then rerun the detail check.
 
+6. Ownership smoke test:
+
+```bash
+npm run smoke:ownership
+```
+
+This creates a small set of test tasks without deleting data, then lists tasks as `user-a` and `user-b` and prints whether the current behavior looks like ownership enforcement is on or off.
+
 ## Monitoring
 
 Minimal production monitoring loop:
