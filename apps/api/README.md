@@ -155,52 +155,25 @@ Production:
 
 ## Backup And Restore
 
-Use `DATABASE_URL` with standard Postgres tools.
-
-Manual backup with the root script:
+Use the root wrapper scripts:
 
 ```bash
 npm run db:backup
-```
-
-Or specify the output file:
-
-```bash
 BACKUP_FILE=/safe/path/agent-app.dump npm run db:backup
+CONFIRM_DB_RESTORE=true RESTORE_FILE=/safe/path/agent-app.dump npm run db:restore
 ```
 
-Manual restore:
+Requirements:
 
-```bash
-RESTORE_FILE=/safe/path/agent-app.dump npm run db:restore
-```
-
-Direct commands:
-
-```bash
-pg_dump "$DATABASE_URL" -Fc -f backups/agent-app-$(date +%Y%m%d-%H%M%S).dump
-pg_restore --clean --if-exists --no-owner --no-privileges -d "$DATABASE_URL" /safe/path/agent-app.dump
-```
+- `DATABASE_URL`
+- `pg_dump`
+- `pg_restore`
 
 Operational notes:
 
-- do not commit backup files into git
-- keep production backups outside the repo when possible
-- restore is destructive and can overwrite existing data
-- after restore, run `npm run db:check`, restart the API if needed, and verify `/health` plus `/tasks`
-
-Local/dev:
-
-- useful for rehearsing restores and protecting local test data
-
-Production:
-
-- back up before migrations, infra changes, or risky manual operations
-- confirm the target `DATABASE_URL` before restore
-
-Supabase Postgres:
-
-- same dump and restore flow, as long as your Postgres connection and permissions allow it
+- backups should be stored outside git
+- restore is destructive and intentionally requires `CONFIRM_DB_RESTORE=true`
+- after restore, run `npm run db:check` and `npm run verify:production`
 
 ## Tables In Use
 
@@ -254,11 +227,24 @@ Auth v1 is a minimal server-side session using an HttpOnly cookie and a PostgreS
 
 Request user resolution priority:
 
+Production:
+
+1. session cookie
+2. no header/env identity fallback
+
+In production, task routes also require a valid session. Without one, the API returns `401` with:
+
+```json
+{ "error": "Authentication required" }
+```
+
+Local/dev:
+
 1. session cookie
 2. `x-user-id` header
 3. `MOCK_USER_ID` or `DEFAULT_USER_ID`
 
-This keeps session-backed identity as the preferred real path while preserving the mock-user fallback for local testing and debugging.
+This keeps session-backed identity as the only real production auth path while preserving mock-user fallback for local testing and debugging outside production.
 
 `auth_sessions` stores:
 
@@ -272,7 +258,7 @@ This lets session-backed login survive API or PM2 restarts as long as PostgreSQL
 Flow by operation:
 
 1. Create
-   `src/http.ts` validates the request, then `src/store.ts` inserts the task into Postgres, updates status, saves the result row, and returns `{ task, result }`.
+   `src/http.ts` validates the request, then `src/store.ts` inserts the task into Postgres, updates status, saves the result row, and returns `{ task, result }`. If downstream processing fails after the task row is created, the API now marks the task as `failed`, stores a failure result message, and still returns a successful create response so the client is not left in an ambiguous partial-create state.
 2. List
    `src/http.ts` calls `listTaskItems()` in `src/store.ts`, which reads `tasks` and `task_results`, then returns the UI-friendly `{ task, result? }` shape.
 3. Detail
@@ -288,6 +274,15 @@ Flow by operation:
 - `src/http.ts`: route handling and request validation
 - `src/db.ts`: loads env and creates the shared `pg` pool
 - `src/store.ts`: Postgres queries plus in-memory fallback
+
+Useful root scripts:
+
+- `npm run db:backup`
+- `npm run db:restore`
+- `npm run health`
+- `npm run verify:production`
+- `npm run pm2:status`
+- `npm run pm2:logs`
 
 ## Operational Risk To Know
 

@@ -19,6 +19,10 @@ export function isTaskOwnershipEnforced(): boolean {
   return process.env.ENFORCE_TASK_OWNERSHIP === "true";
 }
 
+export function isProductionIdentityRuntime(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
 export async function resolveRequestUserId(
   req: IncomingMessage
 ): Promise<string | null> {
@@ -26,6 +30,10 @@ export async function resolveRequestUserId(
 
   if (userIdFromSession) {
     return userIdFromSession;
+  }
+
+  if (isProductionIdentityRuntime()) {
+    return null;
   }
 
   const headerValue = req.headers["x-user-id"];

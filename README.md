@@ -73,69 +73,47 @@ Production uses the same SQL migrations, but `DATABASE_URL` should point at your
 
 ## Database Backup And Restore
 
-Create a manual backup with `pg_dump` in custom format:
+Required tools:
+
+- `pg_dump`
+- `pg_restore`
+- `DATABASE_URL`
+
+Create a backup:
 
 ```bash
 npm run db:backup
 ```
 
-That writes to `backups/agent-app-YYYYMMDD-HHMMSS.dump` by default.
+Default output:
 
-To choose a file path explicitly:
+- `backups/agent-app-YYYYMMDD-HHMMSS.dump`
+
+Custom output path:
 
 ```bash
 BACKUP_FILE=/safe/path/agent-app-prod.dump npm run db:backup
 ```
 
-Equivalent direct command:
+Restore from a dump:
 
 ```bash
-pg_dump "$DATABASE_URL" -Fc -f backups/agent-app-$(date +%Y%m%d-%H%M%S).dump
+CONFIRM_DB_RESTORE=true RESTORE_FILE=/safe/path/agent-app-prod.dump npm run db:restore
 ```
 
-Restore from a dump file:
+Restore safety:
 
-```bash
-RESTORE_FILE=/safe/path/agent-app-prod.dump npm run db:restore
-```
-
-Equivalent direct command:
-
-```bash
-pg_restore --clean --if-exists --no-owner --no-privileges -d "$DATABASE_URL" /safe/path/agent-app-prod.dump
-```
-
-Important warnings:
-
-- restore can overwrite existing data
-- point `DATABASE_URL` at the correct database before restore
-- do not commit backup files into git
-- store production backups outside the repo when possible
+- restore is destructive
+- `CONFIRM_DB_RESTORE=true` is required on purpose
+- verify `DATABASE_URL` before restore
+- keep backups outside git
 
 After restore:
 
 ```bash
 npm run db:check
-npm run health
-curl -sS "http://localhost:${PORT:-3003}/tasks"
+npm run verify:production
 ```
-
-Local/dev:
-
-- backing up local Postgres is useful before destructive testing
-- restoring locally is the safest way to rehearse recovery steps
-
-Production:
-
-- take backups before schema or infrastructure changes
-- store backups in a secure location outside the app repo
-- restore to the intended database only after confirming the target `DATABASE_URL`
-
-Supabase Postgres:
-
-- use the same `pg_dump` and `pg_restore` flow with the Supabase Postgres `DATABASE_URL`
-- network access and DB permissions must allow dump/restore operations
-- for high-risk restores, prefer restoring into a separate database first when your environment allows it
 
 ## Start
 
@@ -210,6 +188,26 @@ Expected response:
 }
 ```
 
+## Production Verify
+
+Run the production verification script:
+
+```bash
+npm run verify:production
+```
+
+It checks:
+
+- API health
+- unauthenticated `/auth/session` behavior
+- unauthenticated `GET /tasks` returns `401`
+- PM2 `agent-api` is online
+- runtime env flags include:
+  - `NODE_ENV=production`
+  - `PORT=3003`
+  - `ALLOW_INMEMORY_FALLBACK=false`
+  - `ENFORCE_TASK_OWNERSHIP=true`
+
 ## Auth V1
 
 The current v1 auth path is a minimal server-side session with an HttpOnly cookie.
@@ -223,6 +221,28 @@ Auth endpoints:
 Auth sessions are now stored in PostgreSQL so login state survives API restarts in production.
 
 Request user resolution priority:
+
+Production:
+
+1. session cookie
+2. no other auth fallback
+
+In production, task routes require a valid session:
+
+- `GET /tasks`
+- `GET /tasks/:id`
+- `POST /tasks`
+- `DELETE /tasks/:id`
+
+Without a valid session, these routes return:
+
+```json
+{ "error": "Authentication required" }
+```
+
+with `401`.
+
+Local/dev:
 
 1. session cookie
 2. `x-user-id` header for dev/testing
@@ -251,6 +271,18 @@ SMOKE_RESTART_COMMAND="pm2 restart ecosystem.config.js --only agent-api --update
   npm run smoke:session-ownership
 ```
 
+Task creation is now reliable once the task row is persisted:
+
+- `POST /tasks` returns success when the task is created
+- if downstream AI processing fails, the task is stored with `status: "failed"`
+- the response still includes a `result` payload that explains the failure
+
+In production, dev identity fallbacks are disabled:
+
+- `x-user-id` does not act as production auth
+- `MOCK_USER_ID` and `DEFAULT_USER_ID` do not silently authenticate production requests
+- session cookie is the only real production identity path
+
 ## Smoke Test
 
 Run these checks after deploy:
@@ -259,6 +291,12 @@ Run these checks after deploy:
 
 ```bash
 npm run health
+```
+
+1. Production verify:
+
+```bash
+npm run verify:production
 ```
 
 2. Web build exists:

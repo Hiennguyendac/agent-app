@@ -41,6 +41,18 @@ async function main() {
     process.exit(1);
   }
 
+  const headerOnlySession = await getSessionWithHeaderOnly("user-a");
+  const unauthenticatedList = await listTasks(null);
+  const headerOnlyTask = await createTask(null, {
+    username: "header-only",
+    title: `sprint3-header-only-${suffix}`,
+    conflictingHeaderUserId: "user-a"
+  });
+
+  if (!headerOnlyTask.ok || !unauthenticatedList.ok) {
+    process.exit(1);
+  }
+
   if (restartCommand.length > 0) {
     console.log(`[session-smoke] INFO restarting API with: ${restartCommand}`);
     execSync(restartCommand, {
@@ -63,6 +75,14 @@ async function main() {
       aliceSession.ok &&
       aliceSession.data?.authenticated === true &&
       aliceSession.data?.userId === "alice",
+    productionRejectsHeaderOnlySessionIdentity:
+      headerOnlySession.ok &&
+      headerOnlySession.data?.authenticated === false &&
+      headerOnlySession.data?.userId === null,
+    productionRejectsUnauthenticatedList:
+      unauthenticatedList.status === 401,
+    productionRejectsHeaderOnlyCreateIdentity:
+      headerOnlyTask.status === 401,
     aliceTaskOwnerIsAlice: aliceTask.ownerId === "alice",
     bobTaskOwnerIsBob: bobTask.ownerId === "bob",
     aliceSeesAliceTask: aliceList.taskIds.includes(aliceTask.taskId),
@@ -130,13 +150,30 @@ async function getSession(cookie) {
   return response;
 }
 
+async function getSessionWithHeaderOnly(userId) {
+  const response = await safeFetch(`${baseUrl}/auth/session`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "x-user-id": userId
+    }
+  });
+
+  console.log(
+    `[session-smoke] ${response.ok ? "PASS" : "FAIL"} session-header-only`,
+    response.data ?? response.message
+  );
+
+  return response;
+}
+
 async function createTask(cookie, options) {
   const response = await safeFetch(`${baseUrl}/tasks`, {
     method: "POST",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
-      Cookie: cookie,
+      ...(cookie ? { Cookie: cookie } : {}),
       ...(options.conflictingHeaderUserId
         ? { "x-user-id": options.conflictingHeaderUserId }
         : {})
@@ -151,19 +188,31 @@ async function createTask(cookie, options) {
 
   const taskId = response.data?.task?.id ?? "";
   const ownerId = response.data?.task?.ownerId ?? null;
-  const ok = taskId.length > 0;
+  const taskStatus = response.data?.task?.status ?? null;
+  const resultOutput = response.data?.result?.outputText ?? null;
+  const ok =
+    options.username === "header-only"
+      ? response.status === 401
+      : response.status === 201 &&
+        taskId.length > 0 &&
+        (taskStatus === "completed" || taskStatus === "failed") &&
+        typeof resultOutput === "string" &&
+        resultOutput.length > 0;
 
   console.log(`[session-smoke] ${ok ? "PASS" : "FAIL"} create`, {
     username: options.username,
     taskId,
     ownerId,
-    status: response.status
+    status: response.status,
+    taskStatus
   });
 
   return {
     ok,
     taskId,
-    ownerId
+    ownerId,
+    taskStatus,
+    status: response.status
   };
 }
 
@@ -172,7 +221,7 @@ async function listTasks(cookie) {
     method: "GET",
     headers: {
       Accept: "application/json",
-      Cookie: cookie
+      ...(cookie ? { Cookie: cookie } : {})
     }
   });
 
@@ -187,8 +236,9 @@ async function listTasks(cookie) {
   });
 
   return {
-    ok: response.ok,
-    taskIds
+    ok: cookie ? response.ok : response.status === 401,
+    taskIds,
+    status: response.status
   };
 }
 

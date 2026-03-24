@@ -1,7 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Task, TaskResult } from "../../../packages/shared-types/index.js";
 import { routeTask } from "../../orchestrator/src/index.js";
 import { logError, logInfo, logRequest } from "./log.js";
-import { resolveTaskAccessContext } from "./request-user.js";
+import {
+  isProductionIdentityRuntime,
+  resolveTaskAccessContext
+} from "./request-user.js";
 import {
   buildClearedSessionCookieHeader,
   buildSessionCookieHeader,
@@ -140,6 +144,33 @@ export async function handleRequest(
     return;
   }
 
+  const requiresAuthenticatedTaskSession =
+    (method === "GET" && url === "/tasks") ||
+    (method === "POST" && url === "/tasks") ||
+    (method === "GET" && taskId !== null) ||
+    (method === "DELETE" && taskId !== null);
+
+  if (
+    requiresAuthenticatedTaskSession &&
+    isProductionIdentityRuntime() &&
+    sessionUserId === null
+  ) {
+    sendJson(
+      res,
+      401,
+      {
+        error: "Authentication required"
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: null
+      }
+    );
+    return;
+  }
+
   if (method === "GET" && url === "/tasks") {
     logInfo("Listing tasks", {
       userId: accessContext.userId
@@ -186,21 +217,44 @@ export async function handleRequest(
         userId: accessContext.userId
       });
     } catch (error: unknown) {
-      const failedTask = (await updateTaskStatus(task.id, "failed")) ?? task;
+      const failedTask = (await updateTaskStatus(task.id, "failed")) ?? {
+        ...task,
+        status: "failed"
+      };
+      const failureMessage =
+        error instanceof Error ? error.message : "Failed to process task";
+      const failureResult = buildFailureTaskResult(failedTask, failureMessage);
 
       logError("Task processing failed", {
         taskId: failedTask.id,
-        error: error instanceof Error ? error.message : String(error)
+        error: failureMessage
       });
 
-      sendJson(res, 500, {
-        task: failedTask,
-        error:
-          error instanceof Error ? error.message : "Failed to process task"
-      }, startedAtMs, method, url, {
-        taskId: failedTask.id,
-        userId: accessContext.userId
-      });
+      try {
+        await saveTaskResult(failureResult);
+      } catch (saveError: unknown) {
+        logError("Failed to persist task failure result", {
+          taskId: failedTask.id,
+          error: saveError instanceof Error ? saveError.message : String(saveError)
+        });
+      }
+
+      sendJson(
+        res,
+        201,
+        {
+          task: failedTask,
+          result: failureResult,
+          error: failureMessage
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          taskId: failedTask.id,
+          userId: accessContext.userId
+        }
+      );
     }
     return;
   }
@@ -260,6 +314,21 @@ export async function handleRequest(
 function getTaskIdFromUrl(url: string): string | null {
   const match = /^\/tasks\/([^/]+)$/.exec(url);
   return match?.[1] ?? null;
+}
+
+function buildFailureTaskResult(task: Task, message: string): TaskResult {
+  return {
+    taskId: task.id,
+    agentName: "growth-agent",
+    outputText: [
+      "## Task Processing Failed",
+      message,
+      "",
+      "This task was created successfully, but downstream processing did not complete.",
+      "You can review the task and retry it later."
+    ].join("\n"),
+    createdAt: new Date().toISOString()
+  };
 }
 
 function getLoginUsername(body: unknown): string | null {
