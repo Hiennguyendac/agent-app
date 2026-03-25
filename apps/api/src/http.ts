@@ -1,8 +1,33 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Task, TaskResult } from "../../../packages/shared-types/index.js";
+import type {
+  AppUserProfile,
+  AppUserRole,
+  AiAnalysis,
+  Department,
+  Task,
+  TaskResult,
+  WorkItem,
+  WorkItemFile,
+  WorkItemStatus
+} from "../../../packages/shared-types/index.js";
 import { routeTask } from "../../orchestrator/src/index.js";
-import { logError, logInfo, logRequest } from "./log.js";
 import {
+  createDepartment,
+  deleteDepartment,
+  listDepartments,
+  updateDepartment
+} from "./departments.js";
+import { logAuthEvent, logError, logInfo, logRequest } from "./log.js";
+import { logAuditEvent } from "./log.js";
+import {
+  clearFailedLoginAttempts,
+  getLoginRateLimitStatus,
+  getLoginSourceIdentifier,
+  recordFailedLoginAttempt
+} from "./login-rate-limit.js";
+import { getPasswordValidationError } from "./password.js";
+import {
+  canManageSchoolAdmin,
   isProductionIdentityRuntime,
   resolveTaskAccessContext
 } from "./request-user.js";
@@ -22,6 +47,26 @@ import {
   updateTaskStatus,
   type CreateTaskInput
 } from "./store.js";
+import {
+  addWorkItemFile,
+  analyzeWorkItem,
+  canCreateWorkItems,
+  createWorkItem,
+  getWorkItemById,
+  listWorkItems,
+  updateWorkItem,
+  type CreateWorkItemFileInput,
+  type CreateWorkItemInput,
+  type UpdateWorkItemInput,
+  type WorkItemListItem
+} from "./work-items.js";
+import {
+  changeUserPassword,
+  findUserById,
+  listUsers,
+  updateUserAssignment,
+  verifyUserCredentials
+} from "./users.js";
 
 /**
  * This file contains the basic HTTP logic for the API.
@@ -42,8 +87,14 @@ export async function handleRequest(
   const url = req.url ?? "/";
   const startedAtMs = Date.now();
   const taskId = getTaskIdFromUrl(url);
+  const departmentId = getDepartmentIdFromUrl(url);
+  const assignmentUserId = getUserAssignmentIdFromUrl(url);
+  const workItemId = getWorkItemIdFromUrl(url);
+  const workItemFileTargetId = getWorkItemFileTargetIdFromUrl(url);
+  const workItemAnalyzeTargetId = getWorkItemAnalyzeTargetIdFromUrl(url);
   const accessContext = await resolveTaskAccessContext(req);
   const sessionUserId = await getSessionUserId(req);
+  const sessionUser = sessionUserId ? await findUserById(sessionUserId) : null;
 
   if (method === "GET" && url === "/health") {
     sendJson(res, 200, {
@@ -58,7 +109,8 @@ export async function handleRequest(
       200,
       {
         authenticated: sessionUserId !== null,
-        userId: sessionUserId
+        userId: sessionUserId,
+        user: sessionUser ? mapAppUserProfileForResponse(sessionUser) : null
       },
       startedAtMs,
       method,
@@ -72,7 +124,10 @@ export async function handleRequest(
 
   if (method === "POST" && url === "/auth/login") {
     const body = await readJsonBody(req);
-    const username = getLoginUsername(body);
+    const credentials = getLoginCredentials(body);
+    const username = credentials.username;
+    const password = credentials.password;
+    const sourceId = getLoginSourceIdentifier(req);
 
     if (!username) {
       sendJson(
@@ -91,10 +146,167 @@ export async function handleRequest(
       return;
     }
 
-    const sessionId = await createSession(username);
+    if (!password) {
+      sendJson(
+        res,
+        400,
+        {
+          error: "Field 'password' is required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: null
+        }
+      );
+      return;
+    }
 
+    const rateLimitStatus = getLoginRateLimitStatus(sourceId, username);
+
+    if (rateLimitStatus.limited) {
+      logAuthEvent(
+        "login.blocked",
+        {
+          username,
+          outcome: "rate-limited",
+          sourceId,
+          retryAfterSeconds: rateLimitStatus.retryAfterSeconds
+        },
+        "WARN"
+      );
+
+      sendJson(
+        res,
+        429,
+        {
+          error: "Too many login attempts"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: null,
+          username,
+          sourceId
+        },
+        {
+          "Retry-After": String(rateLimitStatus.retryAfterSeconds)
+        }
+      );
+      return;
+    }
+
+    const authResult = await verifyUserCredentials(username, password);
+
+    if (!authResult.ok && authResult.reason === "unknown-user") {
+      recordFailedLoginAttempt(sourceId, username);
+      logAuthEvent(
+        "login.failed",
+        {
+          username,
+          outcome: "unknown-user",
+          sourceId
+        },
+        "WARN"
+      );
+      logInfo("Login rejected", {
+        username,
+        reason: "unknown-user"
+      });
+
+      sendJson(
+        res,
+        403,
+        {
+          error: "Unknown user"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: null
+        }
+      );
+      return;
+    }
+
+    if (!authResult.ok && authResult.reason === "inactive-user") {
+      recordFailedLoginAttempt(sourceId, username);
+      logAuthEvent(
+        "login.failed",
+        {
+          username,
+          outcome: "inactive-user",
+          sourceId
+        },
+        "WARN"
+      );
+      logInfo("Login rejected", {
+        username,
+        reason: "inactive-user"
+      });
+
+      sendJson(
+        res,
+        403,
+        {
+          error: "User is inactive"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: null
+        }
+      );
+      return;
+    }
+
+    if (!authResult.ok) {
+      recordFailedLoginAttempt(sourceId, username);
+      logAuthEvent(
+        "login.failed",
+        {
+          username,
+          outcome: "invalid-password",
+          sourceId
+        },
+        "WARN"
+      );
+      logInfo("Login rejected", {
+        username,
+        reason: "invalid-password"
+      });
+
+      sendJson(
+        res,
+        403,
+        {
+          error: "Invalid credentials"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: null
+        }
+      );
+      return;
+    }
+
+    clearFailedLoginAttempts(sourceId, username);
+    const sessionId = await createSession(authResult.user.id);
+
+    logAuthEvent("login.succeeded", {
+      username,
+      userId: authResult.user.id,
+      outcome: "success",
+      sourceId
+    });
     logInfo("User logged in", {
-      userId: username
+      userId: authResult.user.id
     });
 
     sendJson(
@@ -102,13 +314,14 @@ export async function handleRequest(
       200,
       {
         authenticated: true,
-        userId: username
+        userId: authResult.user.id,
+        user: mapAppUserProfileForResponse(authResult.user)
       },
       startedAtMs,
       method,
       url,
       {
-        userId: username
+        userId: authResult.user.id
       },
       {
         "Set-Cookie": buildSessionCookieHeader(sessionId)
@@ -119,6 +332,11 @@ export async function handleRequest(
 
   if (method === "POST" && url === "/auth/logout") {
     await clearSession(req);
+    logAuthEvent("logout", {
+      userId: sessionUserId,
+      sourceId: getLoginSourceIdentifier(req),
+      outcome: "logout"
+    });
 
     logInfo("User logged out", {
       userId: sessionUserId
@@ -129,7 +347,8 @@ export async function handleRequest(
       200,
       {
         authenticated: false,
-        userId: null
+        userId: null,
+        user: null
       },
       startedAtMs,
       method,
@@ -139,6 +358,792 @@ export async function handleRequest(
       },
       {
         "Set-Cookie": buildClearedSessionCookieHeader()
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && url === "/auth/change-password") {
+    if (!sessionUserId) {
+      sendJson(
+        res,
+        401,
+        {
+          error: "Authentication required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: null
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const passwordChangeInput = getPasswordChangeInput(body);
+
+    if (!passwordChangeInput.currentPassword) {
+      sendJson(
+        res,
+        400,
+        {
+          error: "Field 'currentPassword' is required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: sessionUserId
+        }
+      );
+      return;
+    }
+
+    if (!passwordChangeInput.newPassword) {
+      sendJson(
+        res,
+        400,
+        {
+          error: "Field 'newPassword' is required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: sessionUserId
+        }
+      );
+      return;
+    }
+
+    const passwordValidationError = getPasswordValidationError(
+      passwordChangeInput.newPassword
+    );
+
+    if (passwordValidationError) {
+      sendJson(
+        res,
+        400,
+        {
+          error: passwordValidationError
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: sessionUserId
+        }
+      );
+      return;
+    }
+
+    const changeResult = await changeUserPassword(
+      sessionUserId,
+      passwordChangeInput.currentPassword,
+      passwordChangeInput.newPassword
+    );
+
+    if (!changeResult.ok && changeResult.reason === "invalid-current-password") {
+      logAuthEvent(
+        "password-change.failed",
+        {
+          userId: sessionUserId,
+          outcome: "invalid-current-password",
+          sourceId: getLoginSourceIdentifier(req)
+        },
+        "WARN"
+      );
+
+      sendJson(
+        res,
+        403,
+        {
+          error: "Current password is incorrect"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: sessionUserId
+        }
+      );
+      return;
+    }
+
+    if (!changeResult.ok && changeResult.reason === "inactive-user") {
+      sendJson(
+        res,
+        403,
+        {
+          error: "User is inactive"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: sessionUserId
+        }
+      );
+      return;
+    }
+
+    if (!changeResult.ok) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "User not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: sessionUserId
+        }
+      );
+      return;
+    }
+
+    logAuthEvent("password-change.succeeded", {
+      userId: sessionUserId,
+      outcome: "success",
+      sourceId: getLoginSourceIdentifier(req)
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        success: true
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: sessionUserId
+      }
+    );
+    return;
+  }
+
+  const requiresAuthenticatedAdminSession =
+    method === "POST" && url === "/departments" ||
+    method === "PUT" && departmentId !== null ||
+    method === "DELETE" && departmentId !== null ||
+    method === "GET" && url === "/users" ||
+    method === "PUT" && assignmentUserId !== null;
+
+  const requiresAuthenticatedSchoolRead =
+    method === "GET" && url === "/departments";
+
+  if (
+    (requiresAuthenticatedAdminSession || requiresAuthenticatedSchoolRead) &&
+    isProductionIdentityRuntime() &&
+    sessionUserId === null
+  ) {
+    sendJson(
+      res,
+      401,
+      {
+        error: "Authentication required"
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: null
+      }
+    );
+    return;
+  }
+
+  if (
+    (requiresAuthenticatedAdminSession || requiresAuthenticatedSchoolRead) &&
+    !accessContext.userId
+  ) {
+    sendJson(
+      res,
+      401,
+      {
+        error: "Authentication required"
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: null
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && url === "/departments") {
+    sendJson(
+      res,
+      200,
+      {
+        departments: await listDepartments()
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId
+      }
+    );
+    return;
+  }
+
+  if (requiresAuthenticatedAdminSession && !canManageSchoolAdmin(accessContext)) {
+    sendJson(
+      res,
+      403,
+      {
+        error: "Principal access required"
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && url === "/departments") {
+    const body = await readJsonBody(req);
+    const input = getDepartmentInput(body);
+
+    if (input.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: input.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId
+        }
+      );
+      return;
+    }
+
+    const department = await createDepartment(input.value);
+    sendJson(
+      res,
+      201,
+      {
+        department
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        departmentId: department.id
+      }
+    );
+    return;
+  }
+
+  if (method === "PUT" && departmentId) {
+    const body = await readJsonBody(req);
+    const input = getDepartmentInput(body);
+
+    if (input.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: input.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          departmentId
+        }
+      );
+      return;
+    }
+
+    const department = await updateDepartment(departmentId, input.value);
+
+    if (!department) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Department not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          departmentId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        department
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        departmentId
+      }
+    );
+    return;
+  }
+
+  if (method === "DELETE" && departmentId) {
+    const deleted = await deleteDepartment(departmentId);
+
+    if (!deleted) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Department not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          departmentId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        success: true
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        departmentId
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && url === "/users") {
+    sendJson(
+      res,
+      200,
+      {
+        users: await listUsers()
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId
+      }
+    );
+    return;
+  }
+
+  if (method === "PUT" && assignmentUserId) {
+    const body = await readJsonBody(req);
+    const input = getUserAssignmentInput(body);
+
+    if (input.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: input.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          assignmentUserId
+        }
+      );
+      return;
+    }
+
+    const updatedUser = await updateUserAssignment(assignmentUserId, input.value);
+
+    if (!updatedUser) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "User not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          assignmentUserId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        user: updatedUser
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        assignmentUserId
+      }
+    );
+    return;
+  }
+
+  const isWorkItemRoute =
+    (method === "POST" && url === "/work-items") ||
+    (method === "GET" && url === "/work-items") ||
+    (method === "GET" && workItemId !== null) ||
+    (method === "PATCH" && workItemId !== null) ||
+    (method === "POST" && workItemFileTargetId !== null) ||
+    (method === "POST" && workItemAnalyzeTargetId !== null);
+
+  if (isWorkItemRoute && !accessContext.userId) {
+    sendJson(
+      res,
+      401,
+      {
+        error: "Authentication required"
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: null
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && url === "/work-items") {
+    if (!canCreateWorkItems(accessContext)) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "You are not allowed to create work items"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+
+    if (!isCreateWorkItemInput(body)) {
+      sendJson(
+        res,
+        400,
+        {
+          error: getCreateWorkItemInputError(body)
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId
+        }
+      );
+      return;
+    }
+
+    const workItem = await createWorkItem(body, accessContext.userId as string);
+    logAuditEvent("work_item.created", {
+      userId: accessContext.userId,
+      workItemId: workItem.id,
+      status: workItem.status
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        workItem
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: workItem.id
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && url === "/work-items") {
+    sendJson(
+      res,
+      200,
+      {
+        workItems: await listWorkItems(accessContext)
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && workItemId) {
+    const workItem = await getWorkItemById(workItemId, accessContext);
+
+    if (!workItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      workItem,
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId
+      }
+    );
+    return;
+  }
+
+  if (method === "PATCH" && workItemId) {
+    const body = await readJsonBody(req);
+
+    if (!isUpdateWorkItemInput(body)) {
+      sendJson(
+        res,
+        400,
+        {
+          error: getUpdateWorkItemInputError(body)
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId
+        }
+      );
+      return;
+    }
+
+    const updatedWorkItem = await updateWorkItem(workItemId, body, accessContext);
+
+    if (!updatedWorkItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("work_item.updated", {
+      userId: accessContext.userId,
+      workItemId: updatedWorkItem.id,
+      status: updatedWorkItem.status
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        workItem: updatedWorkItem
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: updatedWorkItem.id
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && workItemFileTargetId) {
+    const existingWorkItem = await getWorkItemById(
+      workItemFileTargetId,
+      accessContext
+    );
+
+    if (!existingWorkItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemFileTargetId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+
+    if (!isCreateWorkItemFileInput(body)) {
+      sendJson(
+        res,
+        400,
+        {
+          error: getCreateWorkItemFileInputError(body)
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemFileTargetId
+        }
+      );
+      return;
+    }
+
+    const file = await addWorkItemFile(
+      workItemFileTargetId,
+      body,
+      accessContext.userId as string
+    );
+
+    logAuditEvent("work_item.file_uploaded", {
+      userId: accessContext.userId,
+      workItemId: workItemFileTargetId,
+      filename: file.filename
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        file
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: workItemFileTargetId
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && workItemAnalyzeTargetId) {
+    const analysis = await analyzeWorkItem(
+      workItemAnalyzeTargetId,
+      accessContext.userId as string,
+      accessContext
+    );
+
+    if (!analysis) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemAnalyzeTargetId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("work_item.ai_analyzed", {
+      userId: accessContext.userId,
+      workItemId: workItemAnalyzeTargetId,
+      model: analysis.model ?? null
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        analysis
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: workItemAnalyzeTargetId
       }
     );
     return;
@@ -316,6 +1321,31 @@ function getTaskIdFromUrl(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+function getWorkItemIdFromUrl(url: string): string | null {
+  const match = /^\/work-items\/([^/]+)$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getWorkItemFileTargetIdFromUrl(url: string): string | null {
+  const match = /^\/work-items\/([^/]+)\/files$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getWorkItemAnalyzeTargetIdFromUrl(url: string): string | null {
+  const match = /^\/work-items\/([^/]+)\/analyze$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getDepartmentIdFromUrl(url: string): string | null {
+  const match = /^\/departments\/([^/]+)$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getUserAssignmentIdFromUrl(url: string): string | null {
+  const match = /^\/users\/([^/]+)\/assignment$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 function buildFailureTaskResult(task: Task, message: string): TaskResult {
   return {
     taskId: task.id,
@@ -331,24 +1361,311 @@ function buildFailureTaskResult(task: Task, message: string): TaskResult {
   };
 }
 
-function getLoginUsername(body: unknown): string | null {
+function getCreateWorkItemInputError(body: unknown): string | null {
   if (!body || typeof body !== "object") {
-    return null;
+    return "Request body must be a JSON object";
+  }
+
+  const input = body as Partial<CreateWorkItemInput>;
+
+  if (!isNonEmptyString(input.title)) {
+    return "Field 'title' is required";
+  }
+
+  if (!isNonEmptyString(input.description)) {
+    return "Field 'description' is required";
+  }
+
+  if (input.departmentId !== undefined && typeof input.departmentId !== "string") {
+    return "Field 'departmentId' must be a string if provided";
+  }
+
+  return null;
+}
+
+function isCreateWorkItemInput(body: unknown): body is CreateWorkItemInput {
+  return getCreateWorkItemInputError(body) === null;
+}
+
+function getUpdateWorkItemInputError(body: unknown): string | null {
+  if (!body || typeof body !== "object") {
+    return "Request body must be a JSON object";
+  }
+
+  const input = body as Partial<UpdateWorkItemInput>;
+
+  if (
+    input.title === undefined &&
+    input.description === undefined &&
+    input.departmentId === undefined &&
+    input.assignedToUserId === undefined &&
+    input.status === undefined
+  ) {
+    return "At least one field must be provided";
+  }
+
+  if (input.title !== undefined && !isNonEmptyString(input.title)) {
+    return "Field 'title' must be a non-empty string";
+  }
+
+  if (input.description !== undefined && !isNonEmptyString(input.description)) {
+    return "Field 'description' must be a non-empty string";
+  }
+
+  if (
+    input.departmentId !== undefined &&
+    input.departmentId !== null &&
+    typeof input.departmentId !== "string"
+  ) {
+    return "Field 'departmentId' must be a string or null";
+  }
+
+  if (
+    input.assignedToUserId !== undefined &&
+    input.assignedToUserId !== null &&
+    typeof input.assignedToUserId !== "string"
+  ) {
+    return "Field 'assignedToUserId' must be a string or null";
+  }
+
+  if (input.status !== undefined && !isWorkItemStatus(input.status)) {
+    return "Field 'status' is invalid";
+  }
+
+  return null;
+}
+
+function isUpdateWorkItemInput(body: unknown): body is UpdateWorkItemInput {
+  return getUpdateWorkItemInputError(body) === null;
+}
+
+function getCreateWorkItemFileInputError(body: unknown): string | null {
+  if (!body || typeof body !== "object") {
+    return "Request body must be a JSON object";
+  }
+
+  const input = body as Partial<CreateWorkItemFileInput>;
+
+  if (!isNonEmptyString(input.filename)) {
+    return "Field 'filename' is required";
+  }
+
+  if (input.contentType !== undefined && typeof input.contentType !== "string") {
+    return "Field 'contentType' must be a string if provided";
+  }
+
+  if (input.sizeBytes !== undefined && typeof input.sizeBytes !== "number") {
+    return "Field 'sizeBytes' must be a number if provided";
+  }
+
+  if (input.contentText !== undefined && typeof input.contentText !== "string") {
+    return "Field 'contentText' must be a string if provided";
+  }
+
+  return null;
+}
+
+function isCreateWorkItemFileInput(
+  body: unknown
+): body is CreateWorkItemFileInput {
+  return getCreateWorkItemFileInputError(body) === null;
+}
+
+function getLoginCredentials(body: unknown): { username: string | null; password: string | null } {
+  if (!body || typeof body !== "object") {
+    return {
+      username: null,
+      password: null
+    };
   }
 
   const username = (body as { username?: unknown }).username;
+  const password = (body as { password?: unknown }).password;
 
-  if (typeof username !== "string") {
-    return null;
+  const normalizedUsername =
+    typeof username === "string" && username.trim().length > 0
+      ? username.trim().toLowerCase().slice(0, 64)
+      : null;
+
+  const normalizedPassword =
+    typeof password === "string" && password.length > 0 ? password : null;
+
+  return {
+    username: normalizedUsername,
+    password: normalizedPassword
+  };
+}
+
+function getDepartmentInput(
+  body: unknown
+): { value: { name: string; code?: string }; error: string | null } {
+  if (!body || typeof body !== "object") {
+    return {
+      value: { name: "" },
+      error: "Request body must be a JSON object"
+    };
   }
 
-  const normalizedUsername = username.trim();
+  const name = (body as { name?: unknown }).name;
+  const code = (body as { code?: unknown }).code;
 
-  if (normalizedUsername.length === 0) {
-    return null;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    return {
+      value: { name: "" },
+      error: "Field 'name' is required"
+    };
   }
 
-  return normalizedUsername.slice(0, 64);
+  if (code !== undefined && code !== null && typeof code !== "string") {
+    return {
+      value: { name: "" },
+      error: "Field 'code' must be a string if provided"
+    };
+  }
+
+  return {
+    value: {
+      name: name.trim(),
+      code: typeof code === "string" && code.trim().length > 0 ? code.trim() : undefined
+    },
+    error: null
+  };
+}
+
+function getUserAssignmentInput(
+  body: unknown
+): {
+  value: {
+    role: AppUserRole;
+    departmentId: string | null;
+    position: string | null;
+    isActive: boolean;
+  };
+  error: string | null;
+} {
+  const defaultValue = {
+    role: "staff" as AppUserRole,
+    departmentId: null,
+    position: null,
+    isActive: true
+  };
+
+  if (!body || typeof body !== "object") {
+    return {
+      value: defaultValue,
+      error: "Request body must be a JSON object"
+    };
+  }
+
+  const role = (body as { role?: unknown }).role;
+  const departmentId = (body as { departmentId?: unknown }).departmentId;
+  const position = (body as { position?: unknown }).position;
+  const isActive = (body as { isActive?: unknown }).isActive;
+
+  if (!isAppUserRole(role)) {
+    return {
+      value: defaultValue,
+      error: "Field 'role' is invalid"
+    };
+  }
+
+  if (
+    departmentId !== undefined &&
+    departmentId !== null &&
+    typeof departmentId !== "string"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'departmentId' must be a string or null"
+    };
+  }
+
+  if (position !== undefined && position !== null && typeof position !== "string") {
+    return {
+      value: defaultValue,
+      error: "Field 'position' must be a string or null"
+    };
+  }
+
+  if (typeof isActive !== "boolean") {
+    return {
+      value: defaultValue,
+      error: "Field 'isActive' must be a boolean"
+    };
+  }
+
+  return {
+    value: {
+      role,
+      departmentId:
+        typeof departmentId === "string" && departmentId.trim().length > 0
+          ? departmentId.trim()
+          : null,
+      position:
+        typeof position === "string" && position.trim().length > 0
+          ? position.trim()
+          : null,
+      isActive
+    },
+    error: null
+  };
+}
+
+function getPasswordChangeInput(
+  body: unknown
+): { currentPassword: string | null; newPassword: string | null } {
+  if (!body || typeof body !== "object") {
+    return {
+      currentPassword: null,
+      newPassword: null
+    };
+  }
+
+  const currentPassword = (body as { currentPassword?: unknown }).currentPassword;
+  const newPassword = (body as { newPassword?: unknown }).newPassword;
+
+  return {
+    currentPassword:
+      typeof currentPassword === "string" && currentPassword.length > 0
+        ? currentPassword
+        : null,
+    newPassword:
+      typeof newPassword === "string" && newPassword.length > 0
+        ? newPassword
+        : null
+  };
+}
+
+function isAppUserRole(value: unknown): value is AppUserRole {
+  return (
+    value === "admin" ||
+    value === "principal" ||
+    value === "department_head" ||
+    value === "staff" ||
+    value === "clerk"
+  );
+}
+
+function isWorkItemStatus(value: unknown): value is WorkItemStatus {
+  return (
+    value === "draft" ||
+    value === "waiting_review" ||
+    value === "in_review" ||
+    value === "completed"
+  );
+}
+
+function mapAppUserProfileForResponse(user: AppUserProfile): AppUserProfile {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    role: user.role,
+    departmentId: user.departmentId,
+    departmentName: user.departmentName,
+    position: user.position,
+    isActive: user.isActive
+  };
 }
 
 /**

@@ -169,6 +169,12 @@ Requirements:
 - `pg_dump`
 - `pg_restore`
 
+Backup wrapper behavior:
+
+- `npm run db:backup` uses local `pg_dump` first
+- if the host client is missing or too old for the server major version, it retries with Docker using `postgres:17`
+- set `PG_DUMP_IMAGE` if you need a different matching client image
+
 Operational notes:
 
 - backups should be stored outside git
@@ -182,12 +188,22 @@ Schema file:
 - `infra/sql/001_growth_mvp_schema.sql`
 - `infra/sql/002_add_task_owner.sql`
 - `infra/sql/003_add_auth_sessions.sql`
+- `infra/sql/004_add_app_users.sql`
+- `infra/sql/005_add_app_user_password_hash.sql`
+- `infra/sql/006_add_school_departments_and_roles.sql`
+- `infra/sql/007_add_work_items_domain.sql`
+- `infra/sql/008_allow_admin_role.sql`
 
 Current tables:
 
 - `tasks`
 - `task_results`
 - `auth_sessions`
+- `app_users`
+- `departments`
+- `work_items`
+- `work_item_files`
+- `ai_analysis`
 
 `tasks` stores the main task row:
 
@@ -216,14 +232,89 @@ Main API routes:
 - `GET /auth/session`
 - `POST /auth/login`
 - `POST /auth/logout`
+- `POST /auth/change-password`
 - `GET /tasks`
 - `GET /tasks/:id`
 - `POST /tasks`
 - `DELETE /tasks/:id`
+- `GET /departments`
+- `POST /departments`
+- `PUT /departments/:id`
+- `DELETE /departments/:id`
+- `GET /users`
+- `PUT /users/:id/assignment`
+- `POST /work-items`
+- `GET /work-items`
+- `GET /work-items/:id`
+- `PATCH /work-items/:id`
+- `POST /work-items/:id/files`
+- `POST /work-items/:id/analyze`
+
+## School Workflow Phase 1
+
+Phase 1 adds the first school-domain layer while keeping the existing auth,
+session, ownership, and task routes intact.
+
+New user fields:
+
+- `role`
+- `department_id`
+- `position`
+- `is_active`
+
+Supported roles:
+
+- `principal`
+- `department_head`
+- `staff`
+- `clerk`
+
+Role-aware task access when ownership enforcement is enabled:
+
+- `principal`: all tasks
+- `department_head`: same-department tasks plus legacy unowned tasks
+- `staff`: own tasks plus legacy unowned tasks
+- `clerk`: own tasks plus legacy unowned tasks
+
+School admin routes are principal-only. The current web UI exposes a minimal
+principal-only panel for:
+
+- department CRUD
+- user role/department assignment
+
+## Work Items Phase 2
+
+Work items are a separate school-workflow domain and do not replace Growth
+tasks.
+
+Current work-item access rules:
+
+- `principal`: all work items
+- `admin`: all work items
+- `clerk`: work items they created or are assigned to
+- `department_head`: assigned work items only
+- `staff`: assigned work items only
+
+Audit log events:
+
+- `work_item.created`
+- `work_item.updated`
+- `work_item.file_uploaded`
+- `work_item.ai_analyzed`
 
 ## Auth V1
 
 Auth v1 is a minimal server-side session using an HttpOnly cookie and a PostgreSQL-backed session store.
+
+Sprint 5 adds DB-backed valid users only:
+
+- `POST /auth/login` only succeeds when `username` exists in `app_users`
+- `is_active = true` is required
+- usernames are normalized to lowercase before lookup
+- Sprint 6 adds required password verification via `password_hash`
+- Sprint 7 adds login-only rate limiting and auth audit logging
+- wrong password, unknown user, or inactive user receive `403`
+- repeated failed logins from the same `source + username` bucket return `429`
 
 Request user resolution priority:
 
@@ -252,6 +343,58 @@ This keeps session-backed identity as the only real production auth path while p
 - `user_id`
 - `expires_at`
 - `created_at`
+
+`app_users` stores:
+
+- `id`
+- `username`
+- `display_name`
+- `is_active`
+- `password_hash`
+- `password_updated_at`
+- `created_at`
+
+To add a user:
+
+```sql
+INSERT INTO app_users (id, username, display_name, is_active)
+VALUES ('carol', 'carol', 'Carol', true);
+```
+
+To set a password hash for an existing user:
+
+```bash
+APP_USER_PASSWORD='replace-me' npm run user:set-password -- carol
+```
+
+Current login rate-limit baseline:
+
+- 5 failed attempts within 15 minutes
+- bucketed by `source + username`
+- next attempts are blocked for 15 minutes with:
+
+```json
+{ "error": "Too many login attempts" }
+```
+
+Current auth audit log events:
+
+- `auth.login.succeeded`
+- `auth.login.failed`
+- `auth.login.blocked`
+- `auth.logout`
+- `auth.password-change.succeeded`
+- `auth.password-change.failed`
+
+Auth rate limiting is intentionally minimal and in-memory for now. It improves single-instance PM2 protection, but it is not a shared multi-instance limiter.
+
+Self-service password change:
+
+- requires a valid session
+- verifies `currentPassword`
+- stores a new scrypt `password_hash`
+- updates `password_updated_at`
+- enforces a minimum new password length of 10
 
 This lets session-backed login survive API or PM2 restarts as long as PostgreSQL is available.
 

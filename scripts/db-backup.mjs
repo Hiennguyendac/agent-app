@@ -1,9 +1,10 @@
 import "dotenv/config";
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const databaseUrl = process.env.DATABASE_URL?.trim();
+const dockerImage = process.env.PG_DUMP_IMAGE?.trim() || "postgres:17";
 const backupFile =
   process.env.BACKUP_FILE?.trim() ||
   resolve(
@@ -24,16 +25,40 @@ if (existsSync(backupFile)) {
   process.exit(1);
 }
 
-const result = spawnSync("pg_dump", ["-Fc", "-f", backupFile, databaseUrl], {
-  stdio: "inherit"
-});
+const nativeResult = runCommand("pg_dump", ["-Fc", "-f", backupFile, databaseUrl]);
 
-if (result.status !== 0) {
-  console.error("[db:backup] pg_dump failed.");
-  process.exit(result.status ?? 1);
+if (nativeResult.status === 0) {
+  console.log(`[db:backup] OK ${backupFile}`);
+  process.exit(0);
 }
 
-console.log(`[db:backup] OK ${backupFile}`);
+if (canRetryWithDocker(nativeResult)) {
+  console.warn(`[db:backup] Retrying backup with Docker image ${dockerImage}.`);
+
+  const dockerResult = runCommand("docker", [
+    "run",
+    "--rm",
+    "-v",
+    `${dirname(backupFile)}:/backup`,
+    dockerImage,
+    "pg_dump",
+    "-Fc",
+    "-f",
+    `/backup/${basename(backupFile)}`,
+    databaseUrl
+  ]);
+
+  if (dockerResult.status === 0) {
+    console.log(`[db:backup] OK ${backupFile}`);
+    process.exit(0);
+  }
+
+  printFailure("docker pg_dump", dockerResult);
+  process.exit(dockerResult.status ?? 1);
+}
+
+printFailure("pg_dump", nativeResult);
+process.exit(nativeResult.status ?? 1);
 
 function formatTimestamp(date) {
   const pad = (value) => String(value).padStart(2, "0");
@@ -45,4 +70,40 @@ function formatTimestamp(date) {
   ].join("") +
     "-" +
     [pad(date.getUTCHours()), pad(date.getUTCMinutes()), pad(date.getUTCSeconds())].join("");
+}
+
+function runCommand(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8"
+  });
+
+  if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
+
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+  }
+
+  return result;
+}
+
+function canRetryWithDocker(result) {
+  return result.error?.code === "ENOENT" || result.stderr?.includes("server version mismatch");
+}
+
+function printFailure(command, result) {
+  if (result.error) {
+    if (result.error.code === "ENOENT") {
+      console.error(
+        `[db:backup] ${command} was not found. Install PostgreSQL client tools or make Docker available.`
+      );
+      return;
+    }
+
+    console.error(`[db:backup] Failed to start ${command}: ${result.error.message}`);
+    return;
+  }
+
+  console.error(`[db:backup] ${command} failed with exit code ${result.status ?? "unknown"}.`);
 }

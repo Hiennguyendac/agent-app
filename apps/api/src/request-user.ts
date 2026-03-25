@@ -1,17 +1,28 @@
 import type { IncomingMessage } from "node:http";
+import type { AppUserRole } from "../../../packages/shared-types/index.js";
 import { getSessionUserId } from "./session.js";
+import { findUserById } from "./users.js";
 
 export interface TaskAccessContext {
   enforceOwnership: boolean;
   userId: string | null;
+  role: AppUserRole | null;
+  departmentId: string | null;
+  position: string | null;
 }
 
 export async function resolveTaskAccessContext(
   req: IncomingMessage
 ): Promise<TaskAccessContext> {
+  const userId = await resolveRequestUserId(req);
+  const userProfile = userId ? await findUserById(userId) : null;
+
   return {
     enforceOwnership: isTaskOwnershipEnforced(),
-    userId: await resolveRequestUserId(req)
+    userId,
+    role: userProfile?.role ?? null,
+    departmentId: userProfile?.departmentId ?? null,
+    position: userProfile?.position ?? null
   };
 }
 
@@ -60,4 +71,8 @@ function normalizeUserId(value: string | undefined): string | null {
 
   const normalizedValue = value.trim();
   return normalizedValue.length > 0 ? normalizedValue : null;
+}
+
+export function canManageSchoolAdmin(accessContext: TaskAccessContext): boolean {
+  return accessContext.role === "principal" || accessContext.role === "admin";
 }

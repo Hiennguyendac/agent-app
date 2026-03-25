@@ -8,6 +8,8 @@ import "./styles.css";
  */
 type TaskType = "growth";
 type TaskStatus = "pending" | "running" | "completed" | "failed";
+type AppUserRole = "admin" | "principal" | "department_head" | "staff" | "clerk";
+type WorkItemStatus = "draft" | "waiting_review" | "in_review" | "completed";
 
 interface Task {
   id: string;
@@ -50,9 +52,104 @@ interface DeleteTaskResponse {
   success: boolean;
 }
 
+interface SuccessResponse {
+  success: boolean;
+}
+
+interface Department {
+  id: string;
+  name: string;
+  code?: string;
+  createdAt: string;
+}
+
+interface AppUserProfile {
+  id: string;
+  username: string;
+  displayName?: string;
+  role: AppUserRole;
+  departmentId?: string;
+  departmentName?: string;
+  position?: string;
+  isActive: boolean;
+}
+
 interface SessionResponse {
   authenticated: boolean;
   userId: string | null;
+  user: AppUserProfile | null;
+}
+
+interface WorkItem {
+  id: string;
+  title: string;
+  description: string;
+  status: WorkItemStatus;
+  departmentId?: string;
+  createdByUserId: string;
+  assignedToUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface WorkItemFile {
+  id: string;
+  workItemId: string;
+  filename: string;
+  contentType?: string;
+  sizeBytes?: number;
+  uploadedByUserId?: string;
+  createdAt: string;
+}
+
+interface AiAnalysis {
+  id: string;
+  workItemId: string;
+  summary: string;
+  rawOutput: string;
+  model?: string;
+  createdByUserId?: string;
+  createdAt: string;
+}
+
+interface WorkItemListItem {
+  workItem: WorkItem;
+  latestAnalysis?: AiAnalysis;
+  files: WorkItemFile[];
+}
+
+interface WorkItemsResponse {
+  workItems: WorkItemListItem[];
+}
+
+interface WorkItemResponse {
+  workItem: WorkItem;
+}
+
+interface WorkItemDetailResponse extends WorkItemListItem {}
+
+interface WorkItemFileResponse {
+  file: WorkItemFile;
+}
+
+interface AiAnalysisResponse {
+  analysis: AiAnalysis;
+}
+
+interface DepartmentsResponse {
+  departments: Department[];
+}
+
+interface DepartmentResponse {
+  department: Department;
+}
+
+interface UsersResponse {
+  users: AppUserProfile[];
+}
+
+interface UserResponse {
+  user: AppUserProfile;
 }
 
 interface TaskTemplate {
@@ -69,8 +166,14 @@ const DEFAULT_MOCK_USER_ID = "";
 let currentTasks: Task[] = [];
 let currentTaskItems: TaskListItem[] = [];
 let selectedTaskId: string | null = null;
+let currentLatestResultTaskId: string | null = null;
 let currentMockUserId = loadMockUserId();
 let currentSessionUserId: string | null = null;
+let currentSessionUser: AppUserProfile | null = null;
+let currentDepartments: Department[] = [];
+let currentUsers: AppUserProfile[] = [];
+let currentWorkItems: WorkItemListItem[] = [];
+let selectedWorkItemId: string | null = null;
 
 const TASK_TEMPLATES: Record<string, TaskTemplate> = {
   blogSeo: {
@@ -138,12 +241,46 @@ app.innerHTML = `
               placeholder="alice"
             />
           </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              placeholder="Enter password"
+            />
+          </div>
           <div class="auth-actions">
             <button id="login-button" class="primary-button" type="button">
               Log In
             </button>
             <button id="logout-button" class="secondary-button" type="button">
               Log Out
+            </button>
+          </div>
+        </div>
+        <div class="auth-panel-row">
+          <div class="field">
+            <label for="current-password">Current password</label>
+            <input
+              id="current-password"
+              name="currentPassword"
+              type="password"
+              placeholder="Current password"
+            />
+          </div>
+          <div class="field">
+            <label for="new-password">New password</label>
+            <input
+              id="new-password"
+              name="newPassword"
+              type="password"
+              placeholder="New password"
+            />
+          </div>
+          <div class="auth-actions">
+            <button id="change-password-button" class="secondary-button" type="button">
+              Change Password
             </button>
           </div>
         </div>
@@ -165,6 +302,51 @@ app.innerHTML = `
             placeholder="user-a"
             value="${escapeHtml(currentMockUserId)}"
           />
+        </div>
+      </section>
+
+      <section id="admin-panel" class="mock-user-panel hidden" aria-label="School admin">
+        <div class="mock-user-header">
+          <div>
+            <p class="detail-label">School Admin</p>
+            <p class="mock-user-active">Principal-only setup for departments and user assignment.</p>
+          </div>
+        </div>
+        <div class="admin-section">
+          <div class="admin-card">
+            <h3>Departments</h3>
+            <div class="admin-form-row">
+              <div class="field">
+                <label for="department-name">Department name</label>
+                <input
+                  id="department-name"
+                  name="departmentName"
+                  type="text"
+                  placeholder="Academic Affairs"
+                />
+              </div>
+              <div class="field">
+                <label for="department-code">Department code</label>
+                <input
+                  id="department-code"
+                  name="departmentCode"
+                  type="text"
+                  placeholder="ACADEMIC"
+                />
+              </div>
+              <div class="auth-actions">
+                <button id="create-department-button" class="secondary-button" type="button">
+                  Add Department
+                </button>
+              </div>
+            </div>
+            <div id="department-list" class="admin-list"></div>
+          </div>
+
+          <div class="admin-card">
+            <h3>User Assignment</h3>
+            <div id="user-admin-list" class="admin-list"></div>
+          </div>
         </div>
       </section>
 
@@ -230,6 +412,62 @@ app.innerHTML = `
 
       <div id="task-list" class="task-list"></div>
     </section>
+
+    <section class="panel panel-wide">
+      <div class="tasks-header">
+        <div>
+          <p class="eyebrow">School Workflow</p>
+          <h2>Work Items</h2>
+        </div>
+        <button id="refresh-work-items-button" class="secondary-button" type="button">
+          Refresh Work Items
+        </button>
+      </div>
+
+      <form id="work-item-form" class="task-form" novalidate>
+        <div class="field">
+          <label for="work-item-title">Work item title</label>
+          <input
+            id="work-item-title"
+            name="workItemTitle"
+            type="text"
+            placeholder="Teacher leave request review"
+          />
+        </div>
+        <div class="field">
+          <label for="work-item-description">Description</label>
+          <textarea
+            id="work-item-description"
+            name="workItemDescription"
+            rows="3"
+            placeholder="Describe the school workflow item"
+          ></textarea>
+        </div>
+        <div class="field">
+          <label for="work-item-department">Department</label>
+          <select id="work-item-department" name="workItemDepartment">
+            <option value="">No department</option>
+          </select>
+        </div>
+        <button id="create-work-item-button" class="primary-button" type="submit">
+          Create Work Item
+        </button>
+      </form>
+
+      <section id="principal-queue" class="result-card hidden">
+        <h3>Waiting Review Queue</h3>
+        <div id="principal-queue-list" class="work-item-queue"></div>
+      </section>
+
+      <div class="work-item-layout">
+        <div id="work-item-list" class="task-list"></div>
+        <section id="work-item-detail" class="result-card hidden">
+          <h3 id="work-item-detail-title">Work Item Detail</h3>
+          <p id="work-item-detail-meta" class="result-meta"></p>
+          <div id="work-item-detail-body" class="work-item-detail-body"></div>
+        </section>
+      </div>
+    </section>
   </main>
 `;
 
@@ -255,8 +493,46 @@ const sessionUser = document.querySelector<HTMLParagraphElement>("#session-user"
 const identitySource =
   document.querySelector<HTMLParagraphElement>("#identity-source")!;
 const usernameInput = document.querySelector<HTMLInputElement>("#username")!;
+const passwordInput = document.querySelector<HTMLInputElement>("#password")!;
+const currentPasswordInput =
+  document.querySelector<HTMLInputElement>("#current-password")!;
+const newPasswordInput =
+  document.querySelector<HTMLInputElement>("#new-password")!;
+const adminPanel = document.querySelector<HTMLElement>("#admin-panel")!;
+const departmentNameInput =
+  document.querySelector<HTMLInputElement>("#department-name")!;
+const departmentCodeInput =
+  document.querySelector<HTMLInputElement>("#department-code")!;
+const createDepartmentButton =
+  document.querySelector<HTMLButtonElement>("#create-department-button")!;
+const departmentList = document.querySelector<HTMLDivElement>("#department-list")!;
+const userAdminList = document.querySelector<HTMLDivElement>("#user-admin-list")!;
+const workItemForm = document.querySelector<HTMLFormElement>("#work-item-form")!;
+const workItemTitleInput =
+  document.querySelector<HTMLInputElement>("#work-item-title")!;
+const workItemDescriptionInput =
+  document.querySelector<HTMLTextAreaElement>("#work-item-description")!;
+const workItemDepartmentSelect =
+  document.querySelector<HTMLSelectElement>("#work-item-department")!;
+const createWorkItemButton =
+  document.querySelector<HTMLButtonElement>("#create-work-item-button")!;
+const refreshWorkItemsButton =
+  document.querySelector<HTMLButtonElement>("#refresh-work-items-button")!;
+const workItemList = document.querySelector<HTMLDivElement>("#work-item-list")!;
+const workItemDetail = document.querySelector<HTMLElement>("#work-item-detail")!;
+const workItemDetailTitle =
+  document.querySelector<HTMLHeadingElement>("#work-item-detail-title")!;
+const workItemDetailMeta =
+  document.querySelector<HTMLParagraphElement>("#work-item-detail-meta")!;
+const workItemDetailBody =
+  document.querySelector<HTMLDivElement>("#work-item-detail-body")!;
+const principalQueue = document.querySelector<HTMLElement>("#principal-queue")!;
+const principalQueueList =
+  document.querySelector<HTMLDivElement>("#principal-queue-list")!;
 const loginButton = document.querySelector<HTMLButtonElement>("#login-button")!;
 const logoutButton = document.querySelector<HTMLButtonElement>("#logout-button")!;
+const changePasswordButton =
+  document.querySelector<HTMLButtonElement>("#change-password-button")!;
 
 if (
   !form ||
@@ -279,8 +555,31 @@ if (
   !sessionUser ||
   !identitySource ||
   !usernameInput ||
+  !passwordInput ||
+  !currentPasswordInput ||
+  !newPasswordInput ||
+  !adminPanel ||
+  !departmentNameInput ||
+  !departmentCodeInput ||
+  !createDepartmentButton ||
+  !departmentList ||
+  !userAdminList ||
+  !workItemForm ||
+  !workItemTitleInput ||
+  !workItemDescriptionInput ||
+  !workItemDepartmentSelect ||
+  !createWorkItemButton ||
+  !refreshWorkItemsButton ||
+  !workItemList ||
+  !workItemDetail ||
+  !workItemDetailTitle ||
+  !workItemDetailMeta ||
+  !workItemDetailBody ||
+  !principalQueue ||
+  !principalQueueList ||
   !loginButton ||
-  !logoutButton
+  !logoutButton ||
+  !changePasswordButton
 ) {
   throw new Error("One or more required UI elements were not found");
 }
@@ -315,14 +614,22 @@ mockUserInput.addEventListener("change", async () => {
   mockUserInput.value = currentMockUserId;
   saveMockUserId(currentMockUserId);
   renderActiveUser();
+  resetUserScopedUiState();
+  await loadWorkItems();
   await loadTasks();
 });
 
 loginButton.addEventListener("click", async () => {
   const username = usernameInput.value.trim();
+  const password = passwordInput.value;
 
   if (username.length === 0) {
     setStatus("Username is required to log in.", "error");
+    return;
+  }
+
+  if (password.length === 0) {
+    setStatus("Password is required to log in.", "error");
     return;
   }
 
@@ -336,7 +643,8 @@ loginButton.addEventListener("click", async () => {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        username
+        username,
+        password
       })
     });
 
@@ -346,8 +654,13 @@ loginButton.addEventListener("click", async () => {
 
     const data = (await response.json()) as SessionResponse;
     currentSessionUserId = data.userId;
+    currentSessionUser = data.user;
     renderSessionUser();
     usernameInput.value = "";
+    passwordInput.value = "";
+    resetUserScopedUiState();
+    await loadAdminData();
+    await loadWorkItems();
     await loadTasks();
     setStatus("Logged in successfully.", "success");
   } catch (error: unknown) {
@@ -355,6 +668,62 @@ loginButton.addEventListener("click", async () => {
       error instanceof Error
         ? error.message
         : "Something went wrong while logging in.",
+      "error"
+    );
+  } finally {
+    setAuthButtonsDisabled(false);
+  }
+});
+
+changePasswordButton.addEventListener("click", async () => {
+  const currentPassword = currentPasswordInput.value;
+  const newPassword = newPasswordInput.value;
+
+  if (!currentSessionUserId) {
+    setStatus("You must be logged in to change your password.", "error");
+    return;
+  }
+
+  if (currentPassword.length === 0) {
+    setStatus("Current password is required.", "error");
+    return;
+  }
+
+  if (newPassword.length === 0) {
+    setStatus("New password is required.", "error");
+    return;
+  }
+
+  setAuthButtonsDisabled(true);
+  setStatus("Changing password...", "loading");
+
+  try {
+    const response = await fetch("/api/auth/change-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        currentPassword,
+        newPassword
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not change the password")
+      );
+    }
+
+    const _data = (await response.json()) as SuccessResponse;
+    currentPasswordInput.value = "";
+    newPasswordInput.value = "";
+    setStatus("Password changed successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while changing the password.",
       "error"
     );
   } finally {
@@ -377,7 +746,14 @@ logoutButton.addEventListener("click", async () => {
 
     const data = (await response.json()) as SessionResponse;
     currentSessionUserId = data.userId;
+    currentSessionUser = data.user;
     renderSessionUser();
+    passwordInput.value = "";
+    currentPasswordInput.value = "";
+    newPasswordInput.value = "";
+    resetUserScopedUiState();
+    await loadAdminData();
+    await loadWorkItems();
     await loadTasks();
     setStatus("Logged out successfully.", "success");
   } catch (error: unknown) {
@@ -390,6 +766,125 @@ logoutButton.addEventListener("click", async () => {
   } finally {
     setAuthButtonsDisabled(false);
   }
+});
+
+createDepartmentButton.addEventListener("click", async () => {
+  const name = departmentNameInput.value.trim();
+  const code = departmentCodeInput.value.trim();
+
+  if (!isPrincipalSession()) {
+    setStatus("Principal access is required.", "error");
+    return;
+  }
+
+  if (name.length === 0) {
+    setStatus("Department name is required.", "error");
+    return;
+  }
+
+  createDepartmentButton.disabled = true;
+  setStatus("Creating department...", "loading");
+
+  try {
+    const response = await fetch("/api/departments", {
+      method: "POST",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        name,
+        code
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not create the department")
+      );
+    }
+
+    departmentNameInput.value = "";
+    departmentCodeInput.value = "";
+    await loadAdminData();
+    setStatus("Department created successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while creating the department.",
+      "error"
+    );
+  } finally {
+    createDepartmentButton.disabled = false;
+  }
+});
+
+workItemForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  if (!canUseWorkItems()) {
+    setStatus("Your current role cannot create work items.", "error");
+    return;
+  }
+
+  const title = workItemTitleInput.value.trim();
+  const description = workItemDescriptionInput.value.trim();
+  const departmentId = workItemDepartmentSelect.value || "";
+
+  if (title.length === 0) {
+    setStatus("Work item title is required.", "error");
+    return;
+  }
+
+  if (description.length === 0) {
+    setStatus("Work item description is required.", "error");
+    return;
+  }
+
+  createWorkItemButton.disabled = true;
+  setStatus("Creating work item...", "loading");
+
+  try {
+    const response = await fetch("/api/work-items", {
+      method: "POST",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        title,
+        description,
+        departmentId: departmentId || undefined
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not create the work item")
+      );
+    }
+
+    const data = (await response.json()) as WorkItemResponse;
+    workItemForm.reset();
+    workItemDepartmentSelect.value = "";
+    await loadWorkItems();
+    selectWorkItemById(data.workItem.id);
+    setStatus("Work item created successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while creating the work item.",
+      "error"
+    );
+  } finally {
+    createWorkItemButton.disabled = false;
+  }
+});
+
+refreshWorkItemsButton.addEventListener("click", async () => {
+  setStatus("Refreshing work items...", "loading");
+  await loadWorkItems();
+  setStatus("Work items refreshed.", "success");
 });
 
 form.addEventListener("submit", async (event) => {
@@ -458,7 +953,7 @@ form.addEventListener("submit", async (event) => {
     const data = (await response.json()) as CreateTaskResponse;
 
     setStatus("Growth task created successfully.", "success");
-    showLatestResult(data.result);
+    showLatestResult(data.task.id, data.result);
     form.reset();
     templateSelect.value = "";
     clearAllFieldErrors();
@@ -507,11 +1002,12 @@ async function loadTasks(): Promise<void> {
     currentTaskItems = taskItems;
     currentTasks = taskItems.map((item) => item.task);
     syncSelectedTaskDetail(taskItems);
+    syncLatestResult(taskItems);
     renderTaskList(taskItems);
   } catch (error: unknown) {
     currentTaskItems = [];
     currentTasks = [];
-    selectedTaskId = null;
+    resetUserScopedUiState();
     renderTaskList([]);
     setStatus(
       error instanceof Error
@@ -638,7 +1134,8 @@ function isTaskListItem(item: Task | TaskListItem): item is TaskListItem {
 /**
  * Shows the latest TaskResult returned after creating a task.
  */
-function showLatestResult(result: TaskResult): void {
+function showLatestResult(taskId: string, result: TaskResult): void {
+  currentLatestResultTaskId = taskId;
   latestResult.classList.remove("hidden");
   resultMeta.textContent = `Agent: ${result.agentName} | Created: ${formatDate(
     result.createdAt
@@ -695,6 +1192,25 @@ function syncSelectedTaskDetail(taskItems: TaskListItem[]): void {
   if (!selectedTask) {
     selectedTaskId = null;
   }
+}
+
+function syncLatestResult(taskItems: TaskListItem[]): void {
+  if (!currentLatestResultTaskId) {
+    return;
+  }
+
+  const matchingTaskItem = taskItems.find(
+    (item) =>
+      item.task.id === currentLatestResultTaskId &&
+      typeof item.result?.outputText === "string"
+  );
+
+  if (!matchingTaskItem?.result) {
+    hideLatestResult();
+    return;
+  }
+
+  showLatestResult(matchingTaskItem.task.id, matchingTaskItem.result);
 }
 
 function renderTaskDetail(taskItem: TaskListItem): string {
@@ -885,7 +1401,7 @@ async function handleRetryTask(
     const data = (await response.json()) as CreateTaskResponse;
 
     setStatus("Task retried successfully.", "success");
-    showLatestResult(data.result);
+    showLatestResult(data.task.id, data.result);
     await loadTasks();
     selectedTaskId = data.task.id;
     renderTaskList(currentTaskItems);
@@ -1103,6 +1619,22 @@ function getOwnerLabel(ownerId?: string): string {
   return ownerId && ownerId.trim().length > 0 ? ownerId : "unowned";
 }
 
+function hideLatestResult(): void {
+  currentLatestResultTaskId = null;
+  latestResult.classList.add("hidden");
+  resultMeta.textContent = "";
+  resultText.textContent = "";
+}
+
+function resetUserScopedUiState(): void {
+  selectedTaskId = null;
+  selectedWorkItemId = null;
+  currentWorkItems = [];
+  hideLatestResult();
+  hideWorkItemDetail();
+  renderWorkItemList([]);
+}
+
 function buildApiHeaders(
   extraHeaders: Record<string, string> = {}
 ): Record<string, string> {
@@ -1141,11 +1673,16 @@ function renderActiveUser(): void {
 }
 
 function renderSessionUser(): void {
+  const roleLabel = currentSessionUser?.role
+    ? ` (${currentSessionUser.role})`
+    : "";
+
   sessionUser.textContent =
     currentSessionUserId && currentSessionUserId.length > 0
-      ? `Session user: ${currentSessionUserId}`
+      ? `Session user: ${currentSessionUserId}${roleLabel}`
       : "Session user: not logged in";
   renderIdentitySource();
+  renderAdminPanel();
 }
 
 function renderIdentitySource(): void {
@@ -1169,10 +1706,851 @@ function renderIdentitySource(): void {
 function setAuthButtonsDisabled(isDisabled: boolean): void {
   loginButton.disabled = isDisabled;
   logoutButton.disabled = isDisabled;
+  changePasswordButton.disabled = isDisabled;
+  createDepartmentButton.disabled = isDisabled;
+  createWorkItemButton.disabled = isDisabled;
+  refreshWorkItemsButton.disabled = isDisabled;
 }
 
 function normalizeMockUserId(value: string): string {
   return value.trim();
+}
+
+function isPrincipalSession(): boolean {
+  return currentSessionUser?.role === "principal";
+}
+
+function isAdminLikeSession(): boolean {
+  return currentSessionUser?.role === "principal" || currentSessionUser?.role === "admin";
+}
+
+function canUseWorkItems(): boolean {
+  return (
+    currentSessionUser?.role === "principal" ||
+    currentSessionUser?.role === "admin" ||
+    currentSessionUser?.role === "clerk"
+  );
+}
+
+function renderAdminPanel(): void {
+  if (!(currentSessionUser?.role === "principal" || currentSessionUser?.role === "admin")) {
+    adminPanel.classList.add("hidden");
+    departmentList.innerHTML = "";
+    userAdminList.innerHTML = "";
+    return;
+  }
+
+  adminPanel.classList.remove("hidden");
+  renderDepartmentList();
+  renderUserAdminList();
+}
+
+function renderWorkItemDepartmentOptions(): void {
+  workItemDepartmentSelect.innerHTML = `
+    <option value="">No department</option>
+    ${currentDepartments
+      .map(
+        (department) => `
+          <option value="${escapeHtml(department.id)}">
+            ${escapeHtml(department.name)}
+          </option>
+        `
+      )
+      .join("")}
+  `;
+}
+
+function renderDepartmentList(): void {
+  if (currentDepartments.length === 0) {
+    departmentList.innerHTML = `
+      <div class="empty-state">
+        No departments yet.
+      </div>
+    `;
+    return;
+  }
+
+  departmentList.innerHTML = currentDepartments
+    .map(
+      (department) => `
+        <article class="admin-item">
+          <div class="admin-item-grid">
+            <div class="field">
+              <label>Name</label>
+              <input
+                type="text"
+                data-department-field="name"
+                data-department-id="${escapeHtml(department.id)}"
+                value="${escapeHtml(department.name)}"
+              />
+            </div>
+            <div class="field">
+              <label>Code</label>
+              <input
+                type="text"
+                data-department-field="code"
+                data-department-id="${escapeHtml(department.id)}"
+                value="${escapeHtml(department.code ?? "")}"
+              />
+            </div>
+            <div class="auth-actions">
+              <button
+                class="secondary-button"
+                type="button"
+                data-save-department-id="${escapeHtml(department.id)}"
+              >
+                Save
+              </button>
+              <button
+                class="secondary-button danger-button"
+                type="button"
+                data-delete-department-id="${escapeHtml(department.id)}"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  departmentList
+    .querySelectorAll<HTMLButtonElement>("[data-save-department-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleSaveDepartment(button.dataset.saveDepartmentId ?? null);
+      });
+    });
+
+  departmentList
+    .querySelectorAll<HTMLButtonElement>("[data-delete-department-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleDeleteDepartment(button.dataset.deleteDepartmentId ?? null);
+      });
+    });
+}
+
+function renderUserAdminList(): void {
+  if (currentUsers.length === 0) {
+    userAdminList.innerHTML = `
+      <div class="empty-state">
+        No users available for assignment.
+      </div>
+    `;
+    return;
+  }
+
+  userAdminList.innerHTML = currentUsers
+    .map(
+      (user) => `
+        <article class="admin-item">
+          <div class="admin-user-header">
+            <strong>${escapeHtml(user.username)}</strong>
+            <span>${escapeHtml(user.displayName ?? user.username)}</span>
+          </div>
+          <div class="admin-item-grid">
+            <div class="field">
+              <label>Role</label>
+              <select data-user-field="role" data-user-id="${escapeHtml(user.id)}">
+                ${renderRoleOptions(user.role)}
+              </select>
+            </div>
+            <div class="field">
+              <label>Department</label>
+              <select data-user-field="department" data-user-id="${escapeHtml(user.id)}">
+                <option value="">No department</option>
+                ${currentDepartments
+                  .map(
+                    (department) => `
+                      <option
+                        value="${escapeHtml(department.id)}"
+                        ${department.id === user.departmentId ? "selected" : ""}
+                      >
+                        ${escapeHtml(department.name)}
+                      </option>
+                    `
+                  )
+                  .join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label>Position</label>
+              <input
+                type="text"
+                data-user-field="position"
+                data-user-id="${escapeHtml(user.id)}"
+                value="${escapeHtml(user.position ?? "")}"
+              />
+            </div>
+            <label class="checkbox-field">
+              <input
+                type="checkbox"
+                data-user-field="active"
+                data-user-id="${escapeHtml(user.id)}"
+                ${user.isActive ? "checked" : ""}
+              />
+              Active
+            </label>
+            <div class="auth-actions">
+              <button
+                class="secondary-button"
+                type="button"
+                data-save-user-id="${escapeHtml(user.id)}"
+              >
+                Save Assignment
+              </button>
+            </div>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  userAdminList
+    .querySelectorAll<HTMLButtonElement>("[data-save-user-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleSaveUserAssignment(button.dataset.saveUserId ?? null);
+      });
+    });
+}
+
+function renderRoleOptions(selectedRole: AppUserRole): string {
+  const roles: AppUserRole[] = [
+    "admin",
+    "principal",
+    "department_head",
+    "staff",
+    "clerk"
+  ];
+
+  return roles
+    .map(
+      (role) => `
+        <option value="${escapeHtml(role)}" ${role === selectedRole ? "selected" : ""}>
+          ${escapeHtml(role)}
+        </option>
+      `
+    )
+    .join("");
+}
+
+async function loadAdminData(): Promise<void> {
+  if (!currentSessionUserId) {
+    currentDepartments = [];
+    currentUsers = [];
+    renderWorkItemDepartmentOptions();
+    renderAdminPanel();
+    return;
+  }
+
+  try {
+    const departmentsResponse = await fetch("/api/departments", {
+      headers: buildApiHeaders()
+    });
+
+    if (!departmentsResponse.ok) {
+      throw new Error(
+        await readApiError(
+          departmentsResponse,
+          "The API could not load departments"
+        )
+      );
+    }
+
+    const departmentsData = (await departmentsResponse.json()) as DepartmentsResponse;
+    currentDepartments = departmentsData.departments;
+    renderWorkItemDepartmentOptions();
+
+    if (currentSessionUser?.role === "principal" || currentSessionUser?.role === "admin") {
+      const usersResponse = await fetch("/api/users", {
+        headers: buildApiHeaders()
+      });
+
+      if (!usersResponse.ok) {
+        throw new Error(
+          await readApiError(usersResponse, "The API could not load users")
+        );
+      }
+
+      const usersData = (await usersResponse.json()) as UsersResponse;
+      currentUsers = usersData.users;
+    } else {
+      currentUsers = [];
+    }
+
+    renderAdminPanel();
+  } catch (error: unknown) {
+    currentDepartments = [];
+    currentUsers = [];
+    renderWorkItemDepartmentOptions();
+    renderAdminPanel();
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while loading admin data.",
+      "error"
+    );
+  }
+}
+
+async function loadWorkItems(): Promise<void> {
+  if (!currentSessionUserId) {
+    currentWorkItems = [];
+    renderWorkItemList([]);
+    renderPrincipalQueue([]);
+    hideWorkItemDetail();
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/work-items", {
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not load work items")
+      );
+    }
+
+    const data = (await response.json()) as WorkItemsResponse;
+    currentWorkItems = data.workItems;
+    syncSelectedWorkItem();
+    renderWorkItemList(currentWorkItems);
+    renderPrincipalQueue(currentWorkItems);
+  } catch (error: unknown) {
+    currentWorkItems = [];
+    selectedWorkItemId = null;
+    renderWorkItemList([]);
+    renderPrincipalQueue([]);
+    hideWorkItemDetail();
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while loading work items.",
+      "error"
+    );
+  }
+}
+
+function renderWorkItemList(items: WorkItemListItem[]): void {
+  if (items.length === 0) {
+    workItemList.innerHTML = `
+      <div class="empty-state">
+        No work items available for the current user.
+      </div>
+    `;
+    return;
+  }
+
+  workItemList.innerHTML = items
+    .map(
+      (item) => `
+        <article class="task-card">
+          <div class="task-card-row">
+            <h3>${escapeHtml(item.workItem.title)}</h3>
+            <span class="status-badge status-${escapeHtml(item.workItem.status)}">
+              ${escapeHtml(item.workItem.status)}
+            </span>
+          </div>
+          <p><strong>Created By:</strong> ${escapeHtml(item.workItem.createdByUserId)}</p>
+          <p><strong>Department:</strong> ${escapeHtml(item.workItem.departmentId ?? "none")}</p>
+          <p><strong>Updated:</strong> ${formatDate(item.workItem.updatedAt)}</p>
+          <button
+            class="secondary-button task-detail-button"
+            type="button"
+            data-work-item-id="${escapeHtml(item.workItem.id)}"
+          >
+            ${selectedWorkItemId === item.workItem.id ? "Hide Details" : "View Details"}
+          </button>
+        </article>
+      `
+    )
+    .join("");
+
+  workItemList
+    .querySelectorAll<HTMLButtonElement>("[data-work-item-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        selectWorkItemById(button.dataset.workItemId ?? null);
+      });
+    });
+}
+
+function renderPrincipalQueue(items: WorkItemListItem[]): void {
+  if (!isAdminLikeSession()) {
+    principalQueue.classList.add("hidden");
+    principalQueueList.innerHTML = "";
+    return;
+  }
+
+  const waitingItems = items.filter(
+    (item) => item.workItem.status === "waiting_review"
+  );
+
+  principalQueue.classList.remove("hidden");
+
+  if (waitingItems.length === 0) {
+    principalQueueList.innerHTML = `
+      <div class="empty-state">
+        No work items are currently waiting for review.
+      </div>
+    `;
+    return;
+  }
+
+  principalQueueList.innerHTML = waitingItems
+    .map(
+      (item) => `
+        <button
+          class="queue-item-button"
+          type="button"
+          data-queue-work-item-id="${escapeHtml(item.workItem.id)}"
+        >
+          <strong>${escapeHtml(item.workItem.title)}</strong>
+          <span>${escapeHtml(item.workItem.createdByUserId)}</span>
+        </button>
+      `
+    )
+    .join("");
+
+  principalQueueList
+    .querySelectorAll<HTMLButtonElement>("[data-queue-work-item-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        selectWorkItemById(button.dataset.queueWorkItemId ?? null);
+      });
+    });
+}
+
+function syncSelectedWorkItem(): void {
+  if (!selectedWorkItemId) {
+    hideWorkItemDetail();
+    return;
+  }
+
+  const selected = currentWorkItems.find(
+    (item) => item.workItem.id === selectedWorkItemId
+  );
+
+  if (!selected) {
+    selectedWorkItemId = null;
+    hideWorkItemDetail();
+    return;
+  }
+
+  renderWorkItemDetail(selected);
+}
+
+async function selectWorkItemById(workItemId: string | null): Promise<void> {
+  selectedWorkItemId = selectedWorkItemId === workItemId ? null : workItemId;
+
+  if (!selectedWorkItemId) {
+    hideWorkItemDetail();
+    renderWorkItemList(currentWorkItems);
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/work-items/${encodeURIComponent(selectedWorkItemId)}`, {
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not load the work item")
+      );
+    }
+
+    const detail = (await response.json()) as WorkItemDetailResponse;
+    const index = currentWorkItems.findIndex(
+      (item) => item.workItem.id === detail.workItem.id
+    );
+
+    if (index >= 0) {
+      currentWorkItems[index] = detail;
+    } else {
+      currentWorkItems.unshift(detail);
+    }
+
+    renderWorkItemList(currentWorkItems);
+    renderPrincipalQueue(currentWorkItems);
+    renderWorkItemDetail(detail);
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while loading the work item.",
+      "error"
+    );
+  }
+}
+
+function renderWorkItemDetail(item: WorkItemListItem): void {
+  workItemDetail.classList.remove("hidden");
+  workItemDetailTitle.textContent = item.workItem.title;
+  workItemDetailMeta.textContent = [
+    `Status: ${item.workItem.status}`,
+    `Created: ${formatDate(item.workItem.createdAt)}`,
+    `Updated: ${formatDate(item.workItem.updatedAt)}`
+  ].join(" | ");
+
+  workItemDetailBody.innerHTML = `
+    <div class="task-detail-grid">
+      <div>
+        <p class="detail-label">Description</p>
+        <p class="detail-value">${escapeHtml(item.workItem.description)}</p>
+      </div>
+      <div>
+        <p class="detail-label">Department</p>
+        <p class="detail-value">${escapeHtml(item.workItem.departmentId ?? "none")}</p>
+      </div>
+      <div>
+        <p class="detail-label">Created By</p>
+        <p class="detail-value">${escapeHtml(item.workItem.createdByUserId)}</p>
+      </div>
+      <div>
+        <p class="detail-label">Assigned To</p>
+        <p class="detail-value">${escapeHtml(item.workItem.assignedToUserId ?? "unassigned")}</p>
+      </div>
+    </div>
+    <div class="task-actions">
+      <label class="field work-item-status-field">
+        <span>Status</span>
+        <select id="work-item-status-select">
+          ${renderWorkItemStatusOptions(item.workItem.status)}
+        </select>
+      </label>
+      <button
+        id="save-work-item-button"
+        class="secondary-button"
+        type="button"
+      >
+        Save Work Item
+      </button>
+      <label class="secondary-button work-item-file-label" for="work-item-file-input">
+        Upload File
+      </label>
+      <input id="work-item-file-input" class="hidden" type="file" />
+      <button
+        id="analyze-work-item-button"
+        class="secondary-button"
+        type="button"
+      >
+        AI Analyze
+      </button>
+    </div>
+    <div class="task-output">
+      <p class="detail-label">Files</p>
+      <div class="work-item-files">
+        ${
+          item.files.length > 0
+            ? item.files
+                .map(
+                  (file) => `
+                    <div class="work-item-file-chip">
+                      ${escapeHtml(file.filename)}
+                    </div>
+                  `
+                )
+                .join("")
+            : '<p class="detail-value">No files uploaded yet.</p>'
+        }
+      </div>
+    </div>
+    <div class="task-output">
+      <p class="detail-label">Latest AI Analysis</p>
+      <pre class="task-output-text">${escapeHtml(
+        item.latestAnalysis?.rawOutput ?? "No analysis saved yet."
+      )}</pre>
+    </div>
+  `;
+
+  const saveButton =
+    workItemDetailBody.querySelector<HTMLButtonElement>("#save-work-item-button");
+  const analyzeButton =
+    workItemDetailBody.querySelector<HTMLButtonElement>("#analyze-work-item-button");
+  const fileInput =
+    workItemDetailBody.querySelector<HTMLInputElement>("#work-item-file-input");
+
+  saveButton?.addEventListener("click", async () => {
+    await handleSaveWorkItem(item.workItem.id);
+  });
+
+  analyzeButton?.addEventListener("click", async () => {
+    await handleAnalyzeWorkItem(item.workItem.id);
+  });
+
+  fileInput?.addEventListener("change", async () => {
+    await handleUploadWorkItemFile(item.workItem.id, fileInput);
+  });
+}
+
+function hideWorkItemDetail(): void {
+  workItemDetail.classList.add("hidden");
+  workItemDetailTitle.textContent = "Work Item Detail";
+  workItemDetailMeta.textContent = "";
+  workItemDetailBody.innerHTML = "";
+}
+
+function renderWorkItemStatusOptions(selectedStatus: WorkItemStatus): string {
+  const statuses: WorkItemStatus[] = [
+    "draft",
+    "waiting_review",
+    "in_review",
+    "completed"
+  ];
+
+  return statuses
+    .map(
+      (status) => `
+        <option value="${escapeHtml(status)}" ${status === selectedStatus ? "selected" : ""}>
+          ${escapeHtml(status)}
+        </option>
+      `
+    )
+    .join("");
+}
+
+async function handleSaveWorkItem(workItemId: string): Promise<void> {
+  const statusSelect =
+    workItemDetailBody.querySelector<HTMLSelectElement>("#work-item-status-select");
+
+  if (!statusSelect) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}`, {
+      method: "PATCH",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        status: statusSelect.value
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not update the work item")
+      );
+    }
+
+    await loadWorkItems();
+    await selectWorkItemById(workItemId);
+    setStatus("Work item updated successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while updating the work item.",
+      "error"
+    );
+  }
+}
+
+async function handleUploadWorkItemFile(
+  workItemId: string,
+  input: HTMLInputElement
+): Promise<void> {
+  const file = input.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  try {
+    const contentText = await file.text();
+    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/files`, {
+      method: "POST",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        filename: file.name,
+        contentType: file.type || "text/plain",
+        sizeBytes: file.size,
+        contentText
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not upload the file")
+      );
+    }
+
+    input.value = "";
+    await loadWorkItems();
+    await selectWorkItemById(workItemId);
+    setStatus("File uploaded successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while uploading the file.",
+      "error"
+    );
+  }
+}
+
+async function handleAnalyzeWorkItem(workItemId: string): Promise<void> {
+  try {
+    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/analyze`, {
+      method: "POST",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not analyze the work item")
+      );
+    }
+
+    await loadWorkItems();
+    await selectWorkItemById(workItemId);
+    setStatus("AI analysis completed.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while analyzing the work item.",
+      "error"
+    );
+  }
+}
+
+async function handleSaveDepartment(departmentId: string | null): Promise<void> {
+  if (!departmentId) {
+    return;
+  }
+
+  const nameInput = departmentList.querySelector<HTMLInputElement>(
+    `[data-department-field="name"][data-department-id="${CSS.escape(departmentId)}"]`
+  );
+  const codeInput = departmentList.querySelector<HTMLInputElement>(
+    `[data-department-field="code"][data-department-id="${CSS.escape(departmentId)}"]`
+  );
+
+  if (!nameInput || !codeInput) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/departments/${encodeURIComponent(departmentId)}`, {
+      method: "PUT",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        name: nameInput.value.trim(),
+        code: codeInput.value.trim()
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not update the department")
+      );
+    }
+
+    await loadAdminData();
+    setStatus("Department updated successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while updating the department.",
+      "error"
+    );
+  }
+}
+
+async function handleDeleteDepartment(departmentId: string | null): Promise<void> {
+  if (!departmentId) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/departments/${encodeURIComponent(departmentId)}`, {
+      method: "DELETE",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not delete the department")
+      );
+    }
+
+    await loadAdminData();
+    setStatus("Department deleted successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while deleting the department.",
+      "error"
+    );
+  }
+}
+
+async function handleSaveUserAssignment(userId: string | null): Promise<void> {
+  if (!userId) {
+    return;
+  }
+
+  const roleInput = userAdminList.querySelector<HTMLSelectElement>(
+    `[data-user-field="role"][data-user-id="${CSS.escape(userId)}"]`
+  );
+  const departmentInput = userAdminList.querySelector<HTMLSelectElement>(
+    `[data-user-field="department"][data-user-id="${CSS.escape(userId)}"]`
+  );
+  const positionInput = userAdminList.querySelector<HTMLInputElement>(
+    `[data-user-field="position"][data-user-id="${CSS.escape(userId)}"]`
+  );
+  const activeInput = userAdminList.querySelector<HTMLInputElement>(
+    `[data-user-field="active"][data-user-id="${CSS.escape(userId)}"]`
+  );
+
+  if (!roleInput || !departmentInput || !positionInput || !activeInput) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/users/${encodeURIComponent(userId)}/assignment`, {
+      method: "PUT",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        role: roleInput.value,
+        departmentId: departmentInput.value || null,
+        position: positionInput.value.trim() || null,
+        isActive: activeInput.checked
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not update the user assignment")
+      );
+    }
+
+    await loadAdminData();
+    setStatus("User assignment updated successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while updating the user assignment.",
+      "error"
+    );
+  }
 }
 
 async function loadSession(): Promise<void> {
@@ -1185,14 +2563,18 @@ async function loadSession(): Promise<void> {
 
     const data = (await response.json()) as SessionResponse;
     currentSessionUserId = data.userId;
+    currentSessionUser = data.user;
     renderSessionUser();
   } catch {
     currentSessionUserId = null;
+    currentSessionUser = null;
     renderSessionUser();
   }
 }
 
 void (async () => {
   await loadSession();
+  await loadAdminData();
+  await loadWorkItems();
   await loadTasks();
 })();

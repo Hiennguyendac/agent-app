@@ -79,6 +79,12 @@ Required tools:
 - `pg_restore`
 - `DATABASE_URL`
 
+Backup note:
+
+- `npm run db:backup` tries local `pg_dump` first
+- if the local client is missing or older than the server major version, it retries via Docker using `postgres:17`
+- override the Docker image with `PG_DUMP_IMAGE=postgres:17`
+
 Create a backup:
 
 ```bash
@@ -217,8 +223,127 @@ Auth endpoints:
 - `POST /auth/login`
 - `POST /auth/logout`
 - `GET /auth/session`
+- `POST /auth/change-password`
 
 Auth sessions are now stored in PostgreSQL so login state survives API restarts in production.
+
+Login is now DB-backed:
+
+- only users present in `app_users` with `is_active = true` may log in
+- `password_hash` must be set for the user
+- login requires `{ "username": "...", "password": "..." }`
+- repeated failed logins are rate-limited per `source + username` bucket
+- current baseline: 5 failed attempts in 15 minutes, then `429 Too many login attempts`
+- wrong password returns `403`
+- unknown users return `403`
+- inactive users return `403`
+- usernames are normalized to lowercase during login
+
+To add an internal user:
+
+```sql
+INSERT INTO app_users (id, username, display_name, is_active)
+VALUES ('carol', 'carol', 'Carol', true);
+```
+
+To set or reset a password hash:
+
+```bash
+APP_USER_PASSWORD='replace-me' npm run user:set-password -- carol
+```
+
+Auth audit events are logged to PM2/stdout for:
+
+- login success
+- login failure: unknown user
+- login failure: inactive user
+- login failure: invalid password
+- password change success
+- password change failure: wrong current password
+
+## School Workflow Phase 1
+
+Phase 1 adds the first school-domain layer without replacing the existing task flow:
+
+- `departments` table for school departments
+- `app_users.role` with:
+  - `principal`
+  - `department_head`
+  - `staff`
+  - `clerk`
+- `app_users.department_id`
+- `app_users.position`
+
+Task access now remains ownership-based, with role-aware widening when ownership enforcement is on:
+
+- `principal`: all tasks
+- `department_head`: tasks owned by users in the same department, plus legacy unowned tasks
+- `staff`: own tasks, plus legacy unowned tasks
+- `clerk`: own tasks, plus legacy unowned tasks
+
+Admin endpoints:
+
+- `GET /departments`
+- `POST /departments`
+- `PUT /departments/:id`
+- `DELETE /departments/:id`
+- `GET /users`
+- `PUT /users/:id/assignment`
+
+The new admin UI is intentionally small and appears only for a logged-in `principal`.
+
+## School Workflow Phase 2
+
+Phase 2 adds a first-class Work Item domain without changing the existing task
+tables or task routes.
+
+New tables:
+
+- `work_items`
+- `work_item_files`
+- `ai_analysis`
+
+New routes:
+
+- `POST /work-items`
+- `GET /work-items`
+- `GET /work-items/:id`
+- `PATCH /work-items/:id`
+- `POST /work-items/:id/files`
+- `POST /work-items/:id/analyze`
+
+Current access rules:
+
+- `principal`: view all work items and review the waiting queue
+- `admin`: view all work items
+- `clerk`: create work items and view work items they created or are assigned to
+- other roles: assigned work items only
+
+Work item audit events:
+
+- `work_item.created`
+- `work_item.updated`
+- `work_item.file_uploaded`
+- `work_item.ai_analyzed`
+- login blocked by rate limit
+- logout
+- password change success
+- password change failure: wrong current password
+
+Authenticated self-service password change:
+
+- requires a valid session
+- request body:
+
+```json
+{
+  "currentPassword": "current-password",
+  "newPassword": "new-password"
+}
+```
+
+- current password must match
+- new password must be at least 10 characters
 
 Request user resolution priority:
 

@@ -21,6 +21,7 @@ import type { TaskAccessContext } from "./request-user.js";
 const tasks: Task[] = [];
 const taskResults = new Map<string, TaskResult>();
 const taskOwners = new Map<string, string | null>();
+const taskOwnerDepartments = new Map<string, string | null>();
 
 const INITIAL_TASK_STATUS: TaskStatus = "pending";
 
@@ -43,18 +44,21 @@ export async function listTasks(accessContext?: TaskAccessContext): Promise<Task
     const result = await pool.query(
       `
         SELECT
-          id,
-          task_type,
-          title,
-          goal,
-          audience,
-          notes,
-          status,
-          created_at,
-          owner_id
-        FROM tasks
+          t.id,
+          t.task_type,
+          t.title,
+          t.goal,
+          t.audience,
+          t.notes,
+          t.status,
+          t.created_at,
+          t.owner_id,
+          owner_user.department_id AS owner_department_id
+        FROM tasks t
+        LEFT JOIN app_users owner_user
+          ON owner_user.id = t.owner_id
         ${ownershipClause.clause}
-        ORDER BY created_at DESC
+        ORDER BY t.created_at DESC
       `,
       ownershipClause.values
     );
@@ -79,18 +83,21 @@ export async function listTaskItems(
     const tasksResult = await pool.query(
       `
         SELECT
-          id,
-          task_type,
-          title,
-          goal,
-          audience,
-          notes,
-          status,
-          created_at,
-          owner_id
-        FROM tasks
+          t.id,
+          t.task_type,
+          t.title,
+          t.goal,
+          t.audience,
+          t.notes,
+          t.status,
+          t.created_at,
+          t.owner_id,
+          owner_user.department_id AS owner_department_id
+        FROM tasks t
+        LEFT JOIN app_users owner_user
+          ON owner_user.id = t.owner_id
         ${ownershipClause.clause}
-        ORDER BY created_at DESC
+        ORDER BY t.created_at DESC
       `,
       ownershipClause.values
     );
@@ -141,17 +148,20 @@ export async function getTaskItemById(
     const taskResult = await pool.query(
       `
         SELECT
-          id,
-          task_type,
-          title,
-          goal,
-          audience,
-          notes,
-          status,
-          created_at,
-          owner_id
-        FROM tasks
-        WHERE id = $1
+          t.id,
+          t.task_type,
+          t.title,
+          t.goal,
+          t.audience,
+          t.notes,
+          t.status,
+          t.created_at,
+          t.owner_id,
+          owner_user.department_id AS owner_department_id
+        FROM tasks t
+        LEFT JOIN app_users owner_user
+          ON owner_user.id = t.owner_id
+        WHERE t.id = $1
         ${ownershipClause.clause ? `AND (${ownershipClause.clause.replace(/^WHERE\s+/u, "")})` : ""}
       `,
       [taskId, ...ownershipClause.values]
@@ -180,6 +190,10 @@ export async function getTaskItemById(
     const task = mapTaskRowToTask(taskResult.rows[0]);
     upsertTaskInMemory(task);
     upsertTaskOwnerInMemory(task.id, taskResult.rows[0].owner_id ?? null);
+    upsertTaskOwnerDepartmentInMemory(
+      task.id,
+      (taskResult.rows[0].owner_department_id as string | null) ?? null
+    );
 
     const result =
       resultRow.rows.length > 0
@@ -238,6 +252,7 @@ export async function createTask(
 
   upsertTaskInMemory(task);
   upsertTaskOwnerInMemory(task.id, ownerId);
+  upsertTaskOwnerDepartmentInMemory(task.id, null);
   return task;
 }
 
@@ -401,16 +416,22 @@ async function deleteTaskInPostgres(
   const client = await pool.connect();
   const ownershipClause = buildOwnershipWhereClause(2, accessContext);
   const deleteTaskParams = [taskId, ...ownershipClause.values];
-  const deleteTaskSql = `
-    DELETE FROM tasks
-    WHERE id = $1
-    ${ownershipClause.clause ? `AND (${ownershipClause.clause.replace(/^WHERE\s+/u, "")})` : ""}
-  `;
 
   try {
     await client.query("BEGIN");
 
-    const taskDeleteResult = await client.query(deleteTaskSql, deleteTaskParams);
+    const taskDeleteResult = await client.query(
+      `
+        DELETE FROM tasks t
+        USING tasks t_filter
+        LEFT JOIN app_users owner_user
+          ON owner_user.id = t_filter.owner_id
+        WHERE t.id = t_filter.id
+          AND t.id = $1
+          ${ownershipClause.clause ? `AND (${ownershipClause.clause.replace(/^WHERE\s+/u, "")})` : ""}
+      `,
+      deleteTaskParams
+    );
 
     if ((taskDeleteResult.rowCount ?? 0) === 0) {
       await client.query("ROLLBACK");
@@ -495,6 +516,7 @@ function deleteTaskFromMemory(
 
   taskResults.delete(taskId);
   taskOwners.delete(taskId);
+  taskOwnerDepartments.delete(taskId);
 
   tasks.splice(index, 1);
   return true;
@@ -507,9 +529,14 @@ function syncTasksMemory(dbTasks: Task[]): void {
 
 function syncTaskOwnersMemory(rows: Array<{ id: string; owner_id?: string | null }>): void {
   taskOwners.clear();
+  taskOwnerDepartments.clear();
 
   for (const row of rows) {
     upsertTaskOwnerInMemory(row.id, row.owner_id ?? null);
+    upsertTaskOwnerDepartmentInMemory(
+      row.id,
+      (row as { owner_department_id?: string | null }).owner_department_id ?? null
+    );
   }
 }
 
@@ -527,6 +554,13 @@ function upsertTaskOwnerInMemory(taskId: string, ownerId: string | null): void {
   taskOwners.set(taskId, ownerId);
 }
 
+function upsertTaskOwnerDepartmentInMemory(
+  taskId: string,
+  ownerDepartmentId: string | null
+): void {
+  taskOwnerDepartments.set(taskId, ownerDepartmentId);
+}
+
 function hasTaskAccess(
   taskId: string,
   accessContext?: TaskAccessContext
@@ -536,8 +570,21 @@ function hasTaskAccess(
   }
 
   const ownerId = taskOwners.get(taskId) ?? null;
+  const ownerDepartmentId = taskOwnerDepartments.get(taskId) ?? null;
+
+  if (accessContext.role === "principal") {
+    return true;
+  }
 
   if (!ownerId) {
+    return true;
+  }
+
+  if (
+    accessContext.role === "department_head" &&
+    accessContext.departmentId &&
+    ownerDepartmentId === accessContext.departmentId
+  ) {
     return true;
   }
 
@@ -555,15 +602,29 @@ function buildOwnershipWhereClause(
     };
   }
 
-  if (!accessContext.userId) {
+  if (accessContext.role === "principal") {
     return {
-      clause: "WHERE owner_id IS NULL",
+      clause: "",
       values: []
     };
   }
 
+  if (!accessContext.userId) {
+    return {
+      clause: "WHERE t.owner_id IS NULL",
+      values: []
+    };
+  }
+
+  if (accessContext.role === "department_head" && accessContext.departmentId) {
+    return {
+      clause: `WHERE (t.owner_id = $${startIndex} OR owner_user.department_id = $${startIndex + 1} OR t.owner_id IS NULL)`,
+      values: [accessContext.userId, accessContext.departmentId]
+    };
+  }
+
   return {
-    clause: `WHERE (owner_id = $${startIndex} OR owner_id IS NULL)`,
+    clause: `WHERE (t.owner_id = $${startIndex} OR t.owner_id IS NULL)`,
     values: [accessContext.userId]
   };
 }

@@ -10,9 +10,22 @@ const baseUrl =
 const restartCommand = process.env.SMOKE_RESTART_COMMAND?.trim() ?? "";
 const waitAfterRestartMs = Number(process.env.SMOKE_WAIT_AFTER_RESTART_MS || "3000");
 const suffix = Date.now().toString();
+const alicePassword = process.env.SMOKE_ALICE_PASSWORD?.trim() || "";
+const bobPassword = process.env.SMOKE_BOB_PASSWORD?.trim() || "";
+const wrongPassword = process.env.SMOKE_WRONG_PASSWORD?.trim() || "wrong-password";
+const inactivePassword = process.env.SMOKE_INACTIVE_PASSWORD?.trim() || "";
+const rateLimitProbeUsername =
+  process.env.SMOKE_RATE_LIMIT_USERNAME?.trim() || `rate-limit-probe-${suffix}`;
 
 async function main() {
   console.log(`[session-smoke] API base URL: ${baseUrl}`);
+
+  if (!alicePassword || !bobPassword || !inactivePassword) {
+    console.error(
+      "[session-smoke] Missing required password env: SMOKE_ALICE_PASSWORD, SMOKE_BOB_PASSWORD, SMOKE_INACTIVE_PASSWORD"
+    );
+    process.exit(1);
+  }
 
   const healthOk = await checkHealth();
 
@@ -20,10 +33,23 @@ async function main() {
     process.exit(1);
   }
 
-  const aliceLogin = await login("alice");
-  const bobLogin = await login("bob");
+  const aliceLogin = await login("alice", alicePassword);
+  const bobLogin = await login("bob", bobPassword);
+  const wrongPasswordLogin = await login("alice", wrongPassword);
+  const rateLimitProbeLogin = await login(rateLimitProbeUsername, wrongPassword);
+  const rateLimitedLogin = await triggerRateLimit(rateLimitProbeUsername, wrongPassword, 5);
+  const unknownLogin = await login("unknown-user", wrongPassword);
+  const inactiveLogin = await login("inactive-user", inactivePassword);
 
-  if (!aliceLogin.ok || !bobLogin.ok) {
+  if (
+    !aliceLogin.ok ||
+    !bobLogin.ok ||
+    !wrongPasswordLogin.ok ||
+    !rateLimitProbeLogin.ok ||
+    !rateLimitedLogin.ok ||
+    !unknownLogin.ok ||
+    !inactiveLogin.ok
+  ) {
     process.exit(1);
   }
 
@@ -75,6 +101,16 @@ async function main() {
       aliceSession.ok &&
       aliceSession.data?.authenticated === true &&
       aliceSession.data?.userId === "alice",
+    wrongPasswordRejected:
+      wrongPasswordLogin.status === 403 &&
+      wrongPasswordLogin.cookie === null,
+    repeatedFailuresAreRateLimited: rateLimitedLogin.status === 429,
+    unknownUserRejected:
+      unknownLogin.status === 403 &&
+      unknownLogin.cookie === null,
+    inactiveUserRejected:
+      inactiveLogin.status === 403 &&
+      inactiveLogin.cookie === null,
     productionRejectsHeaderOnlySessionIdentity:
       headerOnlySession.ok &&
       headerOnlySession.data?.authenticated === false &&
@@ -113,18 +149,24 @@ async function checkHealth() {
   return healthy;
 }
 
-async function login(username) {
+async function login(username, password) {
   const response = await safeFetch(`${baseUrl}/auth/login`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json"
     },
-    body: JSON.stringify({ username })
+    body: JSON.stringify({ username, password })
   });
 
   const cookie = response.setCookie;
-  const ok = response.ok && typeof cookie === "string" && cookie.length > 0;
+  const ok =
+    (username === "unknown-user" ||
+      username === "inactive-user" ||
+      username === rateLimitProbeUsername) ||
+    (username === "alice" && password === wrongPassword)
+      ? response.status === 403 && !cookie
+      : response.ok && typeof cookie === "string" && cookie.length > 0;
 
   console.log(`[session-smoke] ${ok ? "PASS" : "FAIL"} login`, {
     username,
@@ -133,7 +175,35 @@ async function login(username) {
 
   return {
     ok,
-    cookie
+    cookie: cookie ?? null,
+    status: response.status
+  };
+}
+
+async function triggerRateLimit(username, password, additionalAttempts) {
+  let lastResponse = null;
+
+  for (let attempt = 0; attempt < additionalAttempts; attempt += 1) {
+    lastResponse = await safeFetch(`${baseUrl}/auth/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ username, password })
+    });
+  }
+
+  const ok = lastResponse?.status === 429;
+
+  console.log(`[session-smoke] ${ok ? "PASS" : "FAIL"} rate-limit`, {
+    username,
+    status: lastResponse?.status ?? 0
+  });
+
+  return {
+    ok,
+    status: lastResponse?.status ?? 0
   };
 }
 

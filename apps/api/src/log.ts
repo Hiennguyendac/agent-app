@@ -24,6 +24,28 @@ export function logRequest(
   });
 }
 
+export function logAuthEvent(
+  event: string,
+  metadata?: Record<string, unknown>,
+  level: "INFO" | "WARN" = "INFO"
+): void {
+  writeLog(level, `auth.${event}`, {
+    at: new Date().toISOString(),
+    ...metadata
+  });
+}
+
+export function logAuditEvent(
+  event: string,
+  metadata?: Record<string, unknown>,
+  level: "INFO" | "WARN" | "ERROR" = "INFO"
+): void {
+  writeLog(level, event, {
+    at: new Date().toISOString(),
+    ...metadata
+  });
+}
+
 function writeLog(
   level: string,
   message: string,
