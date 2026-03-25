@@ -2045,6 +2045,31 @@ function findLinkedDocumentByWorkItemId(
   );
 }
 
+function findRelatedDocumentForTask(
+  taskItem: TaskListItem,
+  linkedWorkItem: WorkItemListItem | null
+): DocumentListItem | null {
+  const exactWorkItemMatch =
+    linkedWorkItem?.workItem.id
+      ? findLinkedDocumentByWorkItemId(linkedWorkItem.workItem.id)
+      : taskItem.task.workItemId
+        ? findLinkedDocumentByWorkItemId(taskItem.task.workItemId)
+        : null;
+
+  if (exactWorkItemMatch) {
+    return exactWorkItemMatch;
+  }
+
+  const titleHaystack = `${taskItem.task.title} ${linkedWorkItem?.workItem.title ?? ""}`
+    .toLowerCase();
+
+  return (
+    currentDocuments.find((item) =>
+      titleHaystack.includes(item.document.filename.toLowerCase())
+    ) ?? null
+  );
+}
+
 function syncLatestResult(taskItems: TaskListItem[]): void {
   if (!currentLatestResultTaskId) {
     return;
@@ -2068,7 +2093,9 @@ function renderTaskDetail(taskItem: TaskListItem): string {
   const linkedWorkItem =
     selectedTaskId === taskItem.task.id ? currentSelectedTaskWorkItem : null;
   const linkedDocument =
-    selectedTaskId === taskItem.task.id ? currentSelectedTaskDocument : null;
+    selectedTaskId === taskItem.task.id
+      ? findRelatedDocumentForTask(taskItem, currentSelectedTaskWorkItem)
+      : null;
 
   return `
     <div class="task-detail-panel">
@@ -3814,7 +3841,12 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
 
   workItemList.innerHTML = filteredItems
     .map(
-      (item) => `
+      (item) => {
+        const assignment = currentAssignments.find(
+          (currentItem) => currentItem.workItemId === item.workItem.id
+        );
+
+        return `
         <article class="task-card ${selectedWorkItemId === item.workItem.id ? "is-selected" : ""}">
           <div class="task-card-row">
             <h3>${escapeHtml(item.workItem.title)}</h3>
@@ -3832,8 +3864,22 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
           >
             ${selectedWorkItemId === item.workItem.id ? "Hide Details" : "View Details"}
           </button>
+          ${
+            assignment
+              ? `
+                <button
+                  class="secondary-button task-detail-button"
+                  type="button"
+                  data-open-work-item-task-id="${escapeHtml(assignment.taskId)}"
+                >
+                  Open Linked Task
+                </button>
+              `
+              : ""
+          }
         </article>
-      `
+      `;
+      }
     )
     .join("");
 
@@ -3842,6 +3888,16 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
     .forEach((button) => {
       button.addEventListener("click", async () => {
         await selectWorkItemById(button.dataset.workItemId ?? null);
+      });
+    });
+
+  workItemList
+    .querySelectorAll<HTMLButtonElement>("[data-open-work-item-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        currentView = "department-tasks";
+        renderCurrentView();
+        await focusTaskById(button.dataset.openWorkItemTaskId ?? null);
       });
     });
 }
@@ -4542,6 +4598,19 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                 >
                   Open Linked Task
                 </button>
+                ${
+                  isAdminLikeSession() && item.workItem.status === "in_review"
+                    ? `
+                      <button
+                        id="approve-response-button"
+                        class="primary-button"
+                        type="button"
+                      >
+                        Approve Response
+                      </button>
+                    `
+                    : ""
+                }
               </div>
             `
             : ""
@@ -4689,6 +4758,12 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       currentView = "department-tasks";
       renderCurrentView();
       await focusTaskById(currentAssignment?.taskId ?? null);
+    });
+
+  workItemDetailBody
+    .querySelector<HTMLButtonElement>("#approve-response-button")
+    ?.addEventListener("click", async () => {
+      await handleApproveTaskResponse(currentAssignment?.taskId ?? null);
     });
 
   workItemDetailBody
@@ -5064,6 +5139,41 @@ async function handleSubmitTaskResponse(taskId: string | null): Promise<void> {
       error instanceof Error
         ? error.message
         : "Something went wrong while submitting the response.",
+      "error"
+    );
+  }
+}
+
+async function handleApproveTaskResponse(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/approve-response`,
+      {
+        method: "POST",
+        headers: buildApiHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not approve the response")
+      );
+    }
+
+    await loadTasks();
+    await loadWorkItems();
+    await loadNotifications();
+    await focusTaskById(taskId);
+    setStatus("Response approved. Task is now completed.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while approving the response.",
       "error"
     );
   }

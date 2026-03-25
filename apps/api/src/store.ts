@@ -299,6 +299,15 @@ export async function submitTaskResponse(
   });
 }
 
+export async function approveTaskResponse(
+  taskId: string
+): Promise<Task | undefined> {
+  return updateTaskAssignmentState(taskId, "completed", {
+    progressPercent: 100,
+    completedAt: new Date().toISOString()
+  });
+}
+
 export async function updateTaskWithAssignmentLink(
   taskId: string,
   assignmentId: string

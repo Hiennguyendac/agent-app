@@ -42,6 +42,7 @@ import {
   getSessionUserId
 } from "./session.js";
 import {
+  approveTaskResponse,
   createTask,
   deleteTaskWithAccess,
   getTaskItemById,
@@ -131,6 +132,7 @@ export async function handleRequest(
   const taskAcceptId = getTaskAcceptIdFromUrl(url);
   const taskRejectId = getTaskRejectIdFromUrl(url);
   const taskSubmitResponseId = getTaskSubmitResponseIdFromUrl(url);
+  const taskApproveResponseId = getTaskApproveResponseIdFromUrl(url);
   const accessContext = await resolveTaskAccessContext(req);
   const sessionUserId = await getSessionUserId(req);
   const sessionUser = sessionUserId ? await findUserById(sessionUserId) : null;
@@ -2015,6 +2017,115 @@ export async function handleRequest(
     return;
   }
 
+  if (method === "POST" && taskApproveResponseId) {
+    if (!(accessContext.role === "principal" || accessContext.role === "admin")) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "Principal or admin access required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskApproveResponseId
+        }
+      );
+      return;
+    }
+
+    const existingTask = await getTaskItemById(taskApproveResponseId, accessContext);
+
+    if (!existingTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskApproveResponseId
+        }
+      );
+      return;
+    }
+
+    const updatedTask = await approveTaskResponse(taskApproveResponseId);
+
+    if (!updatedTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskApproveResponseId
+        }
+      );
+      return;
+    }
+
+    if (updatedTask.workItemId) {
+      await updateWorkItem(
+        updatedTask.workItemId,
+        {
+          status: "completed"
+        },
+        accessContext
+      );
+    }
+
+    logAuditEvent("task.response_approved", {
+      userId: accessContext.userId,
+      taskId: updatedTask.id,
+      assignmentId: updatedTask.assignmentId ?? null,
+      workItemId: updatedTask.workItemId ?? null
+    });
+
+    if (updatedTask.assignmentId) {
+      const assignmentDetail = await getAssignmentById(
+        updatedTask.assignmentId,
+        accessContext
+      );
+
+      await createAssignmentNotification({
+        message: `Response approved: ${updatedTask.title}`,
+        recipientDepartmentId:
+          assignmentDetail?.assignment.mainDepartmentId ??
+          updatedTask.ownerDepartmentId,
+        assignmentId: updatedTask.assignmentId,
+        workItemId: updatedTask.workItemId
+      });
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        task: updatedTask
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: updatedTask.id
+      }
+    );
+    return;
+  }
+
   const requiresAuthenticatedTaskSession =
     (method === "GET" && url === "/tasks") ||
     (method === "POST" && url === "/tasks") ||
@@ -2022,7 +2133,8 @@ export async function handleRequest(
     (method === "DELETE" && taskId !== null) ||
     (method === "POST" && taskAcceptId !== null) ||
     (method === "POST" && taskRejectId !== null) ||
-    (method === "POST" && taskSubmitResponseId !== null);
+    (method === "POST" && taskSubmitResponseId !== null) ||
+    (method === "POST" && taskApproveResponseId !== null);
 
   if (
     requiresAuthenticatedTaskSession &&
@@ -2242,6 +2354,11 @@ function getTaskRejectIdFromUrl(url: string): string | null {
 
 function getTaskSubmitResponseIdFromUrl(url: string): string | null {
   const match = /^\/tasks\/([^/]+)\/submit-response$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskApproveResponseIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/approve-response$/.exec(url);
   return match?.[1] ?? null;
 }
 
