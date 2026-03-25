@@ -10,6 +10,7 @@ export interface AppUser extends AppUserProfile {
 }
 
 export async function findUserByUsername(username: string): Promise<AppUser | null> {
+  const normalizedUsername = normalizeUsernameLookupValue(username);
   const result = await getDbPool().query(
     `
       SELECT
@@ -32,20 +33,52 @@ export async function findUserByUsername(username: string): Promise<AppUser | nu
     [username]
   );
 
-  if (result.rows.length === 0) {
+  if (result.rows.length > 0) {
+    return {
+      id: result.rows[0].id as string,
+      username: result.rows[0].username as string,
+      displayName: (result.rows[0].display_name as string | null) ?? undefined,
+      role: (result.rows[0].role as AppUserRole | null) ?? "staff",
+      departmentId: (result.rows[0].department_id as string | null) ?? undefined,
+      position: (result.rows[0].position as string | null) ?? undefined,
+      isActive: Boolean(result.rows[0].is_active),
+      passwordHash: (result.rows[0].password_hash as string | null) ?? undefined
+    };
+  }
+
+  const fallbackResult = await getDbPool().query(
+    `
+      SELECT
+        u.id,
+        u.username,
+        u.display_name,
+        u.role,
+        u.department_id,
+        d.name AS department_name,
+        u.position,
+        u.is_active,
+        u.password_hash,
+        u.created_at
+      FROM app_users u
+      LEFT JOIN departments d
+        ON d.id = u.department_id
+      ORDER BY u.username ASC
+    `
+  );
+
+  const fallbackRow = fallbackResult.rows.find((row) => {
+    const rowUsername = row.username as string | null;
+    return (
+      typeof rowUsername === "string" &&
+      normalizeUsernameLookupValue(rowUsername) === normalizedUsername
+    );
+  });
+
+  if (!fallbackRow) {
     return null;
   }
 
-  return {
-    id: result.rows[0].id as string,
-    username: result.rows[0].username as string,
-    displayName: (result.rows[0].display_name as string | null) ?? undefined,
-    role: (result.rows[0].role as AppUserRole | null) ?? "staff",
-    departmentId: (result.rows[0].department_id as string | null) ?? undefined,
-    position: (result.rows[0].position as string | null) ?? undefined,
-    isActive: Boolean(result.rows[0].is_active),
-    passwordHash: (result.rows[0].password_hash as string | null) ?? undefined
-  };
+  return mapAppUserRow(fallbackRow);
 }
 
 export async function findUserById(userId: string): Promise<AppUser | null> {
@@ -105,6 +138,56 @@ export interface UpdateUserAssignmentInput {
   departmentId: string | null;
   position: string | null;
   isActive: boolean;
+}
+
+export interface CreateUserInput {
+  username: string;
+  password: string;
+  displayName: string | null;
+  role: AppUserRole;
+  departmentId: string | null;
+  position: string | null;
+  isActive: boolean;
+}
+
+export async function createUser(input: CreateUserInput): Promise<AppUserProfile> {
+  const result = await getDbPool().query(
+    `
+      INSERT INTO app_users (
+        id,
+        username,
+        display_name,
+        role,
+        department_id,
+        position,
+        is_active,
+        password_hash,
+        password_updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      RETURNING
+        id,
+        username,
+        display_name,
+        role,
+        department_id,
+        position,
+        is_active,
+        password_hash
+    `,
+    [
+      input.username,
+      input.username,
+      input.displayName,
+      input.role,
+      input.departmentId,
+      input.position,
+      input.isActive,
+      hashPassword(input.password)
+    ]
+  );
+
+  return mapAppUserRow(result.rows[0]);
 }
 
 export async function updateUserAssignment(
@@ -228,4 +311,13 @@ function mapAppUserRow(row: Record<string, unknown>): AppUser {
     isActive: Boolean(row.is_active),
     passwordHash: (row.password_hash as string | null) ?? undefined
   };
+}
+
+function normalizeUsernameLookupValue(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
 }

@@ -6,7 +6,8 @@ import type {
 import { getDbPool } from "./db.js";
 import type { TaskAccessContext } from "./request-user.js";
 import { analyzeDocumentContent } from "./document-ai.js";
-import { createWorkItem, getWorkItemById, type CreateWorkItemInput } from "./work-items.js";
+import { extractDocumentText } from "./document-extraction.js";
+import { createWorkItem, type CreateWorkItemInput } from "./work-items.js";
 
 export interface DocumentListItem {
   document: Document;
@@ -19,6 +20,7 @@ export interface CreateDocumentInput {
   sizeBytes?: number;
   metadata?: Record<string, unknown>;
   extractedText?: string;
+  contentBase64?: string;
   ocrStatus?: "pending" | "ready" | "failed";
 }
 
@@ -35,7 +37,16 @@ export async function createDocument(
     typeof input.extractedText === "string"
       ? stripNullCharacters(input.extractedText)
       : null;
-  const sanitizedMetadata = sanitizeMetadataValue(input.metadata ?? {});
+  const extractionResult = await extractDocumentText({
+    filename: sanitizedFilename,
+    contentType: sanitizedContentType ?? undefined,
+    contentBase64: input.contentBase64,
+    existingExtractedText: sanitizedExtractedText ?? undefined
+  });
+  const sanitizedMetadata = sanitizeMetadataValue({
+    ...(input.metadata ?? {}),
+    extractionNote: extractionResult.extractionNote ?? undefined
+  });
 
   const result = await getDbPool().query(
     `
@@ -68,8 +79,8 @@ export async function createDocument(
       sanitizedContentType,
       input.sizeBytes ?? null,
       JSON.stringify(sanitizedMetadata),
-      sanitizedExtractedText,
-      input.ocrStatus ?? "ready",
+      extractionResult.extractedText ?? sanitizedExtractedText,
+      extractionResult.ocrStatus ?? input.ocrStatus ?? "ready",
       uploadedByUserId
     ]
   );
@@ -80,7 +91,7 @@ export async function createDocument(
 export async function listDocuments(
   accessContext: TaskAccessContext
 ): Promise<DocumentListItem[]> {
-  const access = buildDocumentAccessWhereClause(1, accessContext);
+  const access = buildDocumentAccessFilter(1, accessContext);
   const result = await getDbPool().query(
     `
       SELECT
@@ -95,7 +106,7 @@ export async function listDocuments(
         d.created_work_item_id,
         d.created_at
       FROM documents d
-      ${access.clause}
+      ${access.whereClause}
       ORDER BY d.created_at DESC
     `,
     access.values
@@ -119,7 +130,7 @@ export async function getDocumentById(
   documentId: string,
   accessContext: TaskAccessContext
 ): Promise<DocumentListItem | null> {
-  const access = buildDocumentAccessWhereClause(2, accessContext);
+  const access = buildDocumentAccessFilter(2, accessContext);
   const result = await getDbPool().query(
     `
       SELECT
@@ -135,7 +146,7 @@ export async function getDocumentById(
         d.created_at
       FROM documents d
       WHERE d.id = $1
-      ${access.clause ? `AND (${access.clause.replace(/^WHERE\s+/u, "")})` : ""}
+      ${access.expression ? `AND (${access.expression})` : ""}
       LIMIT 1
     `,
     [documentId, ...access.values]
@@ -243,23 +254,52 @@ export async function canCreateDocuments(
   return accessContext.userId !== null;
 }
 
-function buildDocumentAccessWhereClause(
+function buildDocumentAccessFilter(
   parameterStartIndex: number,
   accessContext: TaskAccessContext
-): { clause: string; values: string[] } {
+): { whereClause: string; expression: string; values: string[] } {
   if (accessContext.role === "principal" || accessContext.role === "admin") {
-    return { clause: "", values: [] };
+    return { whereClause: "", expression: "", values: [] };
+  }
+
+  if (accessContext.role === "department_head" && accessContext.departmentId) {
+    const expression = `(
+      d.uploaded_by_user_id = $${parameterStartIndex}
+      OR EXISTS (
+        SELECT 1
+        FROM work_items w
+        LEFT JOIN assignments a
+          ON a.work_item_id = w.id
+        LEFT JOIN tasks t
+          ON t.assignment_id = a.id
+        WHERE w.id = d.created_work_item_id
+          AND (
+            w.department_id = $${parameterStartIndex + 1}
+            OR a.main_department_id = $${parameterStartIndex + 1}
+            OR t.owner_department_id = $${parameterStartIndex + 1}
+          )
+      )
+    )`;
+
+    return {
+      whereClause: `WHERE ${expression}`,
+      expression,
+      values: [accessContext.userId ?? "", accessContext.departmentId]
+    };
   }
 
   if (accessContext.userId) {
+    const expression = `d.uploaded_by_user_id = $${parameterStartIndex}`;
     return {
-      clause: `WHERE d.uploaded_by_user_id = $${parameterStartIndex}`,
+      whereClause: `WHERE ${expression}`,
+      expression,
       values: [accessContext.userId]
     };
   }
 
   return {
-    clause: "WHERE 1 = 0",
+    whereClause: "WHERE 1 = 0",
+    expression: "1 = 0",
     values: []
   };
 }

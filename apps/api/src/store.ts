@@ -291,6 +291,14 @@ export async function rejectAssignedTask(taskId: string): Promise<Task | undefin
   });
 }
 
+export async function submitTaskResponse(
+  taskId: string
+): Promise<Task | undefined> {
+  return updateTaskAssignmentState(taskId, "running", {
+    progressPercent: 90
+  });
+}
+
 export async function updateTaskWithAssignmentLink(
   taskId: string,
   assignmentId: string
@@ -486,6 +494,7 @@ async function updateTaskAssignmentState(
   options: {
     acceptedAt?: string;
     progressPercent?: number;
+    completedAt?: string;
   }
 ): Promise<Task | undefined> {
   const pool = getDbPool();
@@ -494,7 +503,8 @@ async function updateTaskAssignmentState(
       UPDATE tasks
       SET status = $2,
           accepted_at = COALESCE($3, accepted_at),
-          progress_percent = COALESCE($4, progress_percent)
+          progress_percent = COALESCE($4, progress_percent),
+          completed_at = COALESCE($5, completed_at)
       WHERE id = $1
       RETURNING
         id,
@@ -513,7 +523,13 @@ async function updateTaskAssignmentState(
         accepted_at,
         completed_at
     `,
-    [taskId, status, options.acceptedAt ?? null, options.progressPercent ?? null]
+    [
+      taskId,
+      status,
+      options.acceptedAt ?? null,
+      options.progressPercent ?? null,
+      options.completedAt ?? null
+    ]
   );
 
   if (result.rows.length === 0) {

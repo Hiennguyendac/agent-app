@@ -47,6 +47,7 @@ import {
   getTaskItemById,
   listTaskItems,
   saveTaskResult,
+  submitTaskResponse,
   updateTaskWithAssignmentLink,
   updateTaskStatus,
   type CreateTaskInput
@@ -59,7 +60,8 @@ import {
   createAssignment,
   createAssignmentNotification,
   getAssignmentById,
-  listAssignments
+  listAssignments,
+  listNotifications
 } from "./assignments.js";
 import {
   addWorkItemFile,
@@ -85,8 +87,10 @@ import {
   type CreateDocumentInput
 } from "./documents.js";
 import {
+  createUser,
   changeUserPassword,
   findUserById,
+  findUserByUsername,
   listUsers,
   updateUserAssignment,
   verifyUserCredentials
@@ -126,6 +130,7 @@ export async function handleRequest(
   const assignmentId = getAssignmentIdFromUrl(url);
   const taskAcceptId = getTaskAcceptIdFromUrl(url);
   const taskRejectId = getTaskRejectIdFromUrl(url);
+  const taskSubmitResponseId = getTaskSubmitResponseIdFromUrl(url);
   const accessContext = await resolveTaskAccessContext(req);
   const sessionUserId = await getSessionUserId(req);
   const sessionUser = sessionUserId ? await findUserById(sessionUserId) : null;
@@ -566,6 +571,7 @@ export async function handleRequest(
     method === "POST" && url === "/departments" ||
     method === "PUT" && departmentId !== null ||
     method === "DELETE" && departmentId !== null ||
+    method === "POST" && url === "/users" ||
     method === "GET" && url === "/users" ||
     method === "PUT" && assignmentUserId !== null;
 
@@ -800,6 +806,66 @@ export async function handleRequest(
     return;
   }
 
+  if (method === "POST" && url === "/users") {
+    const body = await readJsonBody(req);
+    const input = getCreateUserInput(body);
+
+    if (input.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: input.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId
+        }
+      );
+      return;
+    }
+
+    const existingUser = await findUserByUsername(input.value.username);
+
+    if (existingUser) {
+      sendJson(
+        res,
+        409,
+        {
+          error: "User already exists"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          username: input.value.username
+        }
+      );
+      return;
+    }
+
+    const user = await createUser(input.value);
+
+    sendJson(
+      res,
+      201,
+      {
+        user
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        username: user.username
+      }
+    );
+    return;
+  }
+
   if (method === "PUT" && assignmentUserId) {
     const body = await readJsonBody(req);
     const input = getUserAssignmentInput(body);
@@ -860,6 +926,7 @@ export async function handleRequest(
   }
 
   const isWorkItemRoute =
+    (method === "GET" && url === "/notifications") ||
     (method === "POST" && url === "/documents") ||
     (method === "GET" && url === "/documents") ||
     (method === "GET" && documentId !== null) ||
@@ -1388,6 +1455,26 @@ export async function handleRequest(
       accessContext.userId as string
     );
 
+    if (
+      accessContext.role === "department_head" ||
+      accessContext.role === "staff" ||
+      accessContext.role === "clerk"
+    ) {
+      await updateWorkItem(
+        workItemFileTargetId,
+        {
+          status: "in_review"
+        },
+        accessContext
+      );
+    }
+
+    await createAssignmentNotification({
+      message: `Response file uploaded for ${existingWorkItem.workItem.title}`,
+      recipientDepartmentId: existingWorkItem.workItem.departmentId,
+      workItemId: existingWorkItem.workItem.id
+    });
+
     logAuditEvent("work_item.file_uploaded", {
       userId: accessContext.userId,
       workItemId: workItemFileTargetId,
@@ -1546,7 +1633,14 @@ export async function handleRequest(
     });
 
     await updateTaskWithAssignmentLink(task.id, assignment.id);
-    await markWorkItemAssigned(detail.workItem.id, accessContext);
+    await updateWorkItem(
+      detail.workItem.id,
+      {
+        departmentId: assignment.mainDepartmentId,
+        status: "assigned"
+      },
+      accessContext
+    );
 
     await createAssignmentNotification({
       message: `New assignment for work item ${detail.workItem.title}`,
@@ -1650,6 +1744,23 @@ export async function handleRequest(
     return;
   }
 
+  if (method === "GET" && url === "/notifications") {
+    sendJson(
+      res,
+      200,
+      {
+        notifications: await listNotifications(accessContext)
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId
+      }
+    );
+    return;
+  }
+
   if (method === "POST" && taskAcceptId) {
     const existingTask = await getTaskItemById(taskAcceptId, accessContext);
 
@@ -1696,6 +1807,23 @@ export async function handleRequest(
       taskId: updatedTask.id,
       assignmentId: updatedTask.assignmentId ?? null
     });
+
+    if (updatedTask.assignmentId) {
+      const assignmentDetail = await getAssignmentById(
+        updatedTask.assignmentId,
+        accessContext
+      );
+
+      await createAssignmentNotification({
+        message: `Task accepted: ${updatedTask.title}`,
+        recipientDepartmentId:
+          assignmentDetail?.assignment.mainDepartmentId ??
+          updatedTask.ownerDepartmentId,
+        recipientUserId: assignmentDetail?.assignment.createdByUserId,
+        assignmentId: updatedTask.assignmentId,
+        workItemId: updatedTask.workItemId
+      });
+    }
 
     sendJson(
       res,
@@ -1761,6 +1889,115 @@ export async function handleRequest(
       assignmentId: updatedTask.assignmentId ?? null
     });
 
+    if (updatedTask.assignmentId) {
+      const assignmentDetail = await getAssignmentById(
+        updatedTask.assignmentId,
+        accessContext
+      );
+
+      await createAssignmentNotification({
+        message: `Task rejected: ${updatedTask.title}`,
+        recipientDepartmentId:
+          assignmentDetail?.assignment.mainDepartmentId ??
+          updatedTask.ownerDepartmentId,
+        recipientUserId: assignmentDetail?.assignment.createdByUserId,
+        assignmentId: updatedTask.assignmentId,
+        workItemId: updatedTask.workItemId
+      });
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        task: updatedTask
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: updatedTask.id
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && taskSubmitResponseId) {
+    const existingTask = await getTaskItemById(taskSubmitResponseId, accessContext);
+
+    if (!existingTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskSubmitResponseId
+        }
+      );
+      return;
+    }
+
+    const updatedTask = await submitTaskResponse(taskSubmitResponseId);
+
+    if (!updatedTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskSubmitResponseId
+        }
+      );
+      return;
+    }
+
+    if (updatedTask.workItemId) {
+      await updateWorkItem(
+        updatedTask.workItemId,
+        {
+          status: "in_review"
+        },
+        accessContext
+      );
+    }
+
+    logAuditEvent("task.response_submitted", {
+      userId: accessContext.userId,
+      taskId: updatedTask.id,
+      assignmentId: updatedTask.assignmentId ?? null,
+      workItemId: updatedTask.workItemId ?? null
+    });
+
+    if (updatedTask.assignmentId) {
+      const assignmentDetail = await getAssignmentById(
+        updatedTask.assignmentId,
+        accessContext
+      );
+
+      await createAssignmentNotification({
+        message: `Department response submitted: ${updatedTask.title}`,
+        recipientDepartmentId:
+          assignmentDetail?.assignment.mainDepartmentId ??
+          updatedTask.ownerDepartmentId,
+        recipientUserId: assignmentDetail?.assignment.createdByUserId,
+        assignmentId: updatedTask.assignmentId,
+        workItemId: updatedTask.workItemId
+      });
+    }
+
     sendJson(
       res,
       200,
@@ -1784,7 +2021,8 @@ export async function handleRequest(
     (method === "GET" && taskId !== null) ||
     (method === "DELETE" && taskId !== null) ||
     (method === "POST" && taskAcceptId !== null) ||
-    (method === "POST" && taskRejectId !== null);
+    (method === "POST" && taskRejectId !== null) ||
+    (method === "POST" && taskSubmitResponseId !== null);
 
   if (
     requiresAuthenticatedTaskSession &&
@@ -2002,6 +2240,11 @@ function getTaskRejectIdFromUrl(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+function getTaskSubmitResponseIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/submit-response$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 function getDepartmentIdFromUrl(url: string): string | null {
   const match = /^\/departments\/([^/]+)$/.exec(url);
   return match?.[1] ?? null;
@@ -2009,7 +2252,15 @@ function getDepartmentIdFromUrl(url: string): string | null {
 
 function getUserAssignmentIdFromUrl(url: string): string | null {
   const match = /^\/users\/([^/]+)\/assignment$/.exec(url);
-  return match?.[1] ?? null;
+  if (!match?.[1]) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
 }
 
 function buildFailureTaskResult(task: Task, message: string): TaskResult {
@@ -2077,6 +2328,10 @@ function getCreateDocumentInputError(body: unknown): string | null {
 
   if (input.extractedText !== undefined && typeof input.extractedText !== "string") {
     return "Field 'extractedText' must be a string if provided";
+  }
+
+  if (input.contentBase64 !== undefined && typeof input.contentBase64 !== "string") {
+    return "Field 'contentBase64' must be a string if provided";
   }
 
   if (
@@ -2487,6 +2742,134 @@ function getUserAssignmentInput(
 
   return {
     value: {
+      role,
+      departmentId:
+        typeof departmentId === "string" && departmentId.trim().length > 0
+          ? departmentId.trim()
+          : null,
+      position:
+        typeof position === "string" && position.trim().length > 0
+          ? position.trim()
+          : null,
+      isActive
+    },
+    error: null
+  };
+}
+
+function getCreateUserInput(
+  body: unknown
+): {
+  value: {
+    username: string;
+    password: string;
+    displayName: string | null;
+    role: AppUserRole;
+    departmentId: string | null;
+    position: string | null;
+    isActive: boolean;
+  };
+  error: string | null;
+} {
+  const defaultValue = {
+    username: "",
+    password: "",
+    displayName: null,
+    role: "staff" as AppUserRole,
+    departmentId: null,
+    position: null,
+    isActive: true
+  };
+
+  if (!body || typeof body !== "object") {
+    return {
+      value: defaultValue,
+      error: "Request body must be a JSON object"
+    };
+  }
+
+  const username = (body as { username?: unknown }).username;
+  const password = (body as { password?: unknown }).password;
+  const displayName = (body as { displayName?: unknown }).displayName;
+  const role = (body as { role?: unknown }).role;
+  const departmentId = (body as { departmentId?: unknown }).departmentId;
+  const position = (body as { position?: unknown }).position;
+  const isActive = (body as { isActive?: unknown }).isActive;
+
+  if (typeof username !== "string" || username.trim().length === 0) {
+    return {
+      value: defaultValue,
+      error: "Field 'username' is required"
+    };
+  }
+
+  if (typeof password !== "string" || password.length === 0) {
+    return {
+      value: defaultValue,
+      error: "Field 'password' is required"
+    };
+  }
+
+  const passwordError = getPasswordValidationError(password);
+
+  if (passwordError) {
+    return {
+      value: defaultValue,
+      error: passwordError
+    };
+  }
+
+  if (
+    displayName !== undefined &&
+    displayName !== null &&
+    typeof displayName !== "string"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'displayName' must be a string if provided"
+    };
+  }
+
+  if (!isAppUserRole(role)) {
+    return {
+      value: defaultValue,
+      error: "Field 'role' is invalid"
+    };
+  }
+
+  if (
+    departmentId !== undefined &&
+    departmentId !== null &&
+    typeof departmentId !== "string"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'departmentId' must be a string or null"
+    };
+  }
+
+  if (position !== undefined && position !== null && typeof position !== "string") {
+    return {
+      value: defaultValue,
+      error: "Field 'position' must be a string or null"
+    };
+  }
+
+  if (typeof isActive !== "boolean") {
+    return {
+      value: defaultValue,
+      error: "Field 'isActive' must be a boolean"
+    };
+  }
+
+  return {
+    value: {
+      username: username.trim().toLowerCase(),
+      password,
+      displayName:
+        typeof displayName === "string" && displayName.trim().length > 0
+          ? displayName.trim()
+          : null,
       role,
       departmentId:
         typeof departmentId === "string" && departmentId.trim().length > 0

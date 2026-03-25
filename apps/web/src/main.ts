@@ -210,6 +210,21 @@ interface AssignmentsResponse {
   assignments: Assignment[];
 }
 
+interface Notification {
+  id: string;
+  message: string;
+  recipientDepartmentId?: string;
+  recipientUserId?: string;
+  assignmentId?: string;
+  workItemId?: string;
+  createdAt: string;
+  isRead: boolean;
+}
+
+interface NotificationsResponse {
+  notifications: Notification[];
+}
+
 interface DepartmentsResponse {
   departments: Department[];
 }
@@ -252,6 +267,9 @@ let currentWorkItems: WorkItemListItem[] = [];
 let selectedWorkItemId: string | null = null;
 let currentWorkItemAssignments: Assignment[] = [];
 let currentAssignments: Assignment[] = [];
+let currentSelectedTaskWorkItem: WorkItemListItem | null = null;
+let currentSelectedTaskDocument: DocumentListItem | null = null;
+let currentNotifications: Notification[] = [];
 let currentView:
   | "overview"
   | "documents"
@@ -597,6 +615,55 @@ app.innerHTML = `
 
             <div class="admin-card hidden" data-admin-panel="users">
               <h3>User Assignment</h3>
+              <article class="admin-item">
+                <div class="admin-user-header">
+                  <strong>Add user</strong>
+                  <span>Create a new internal account</span>
+                </div>
+                <div class="admin-item-grid">
+                  <div class="field">
+                    <label for="create-user-username">Username</label>
+                    <input id="create-user-username" type="text" placeholder="new.user" />
+                  </div>
+                  <div class="field">
+                    <label for="create-user-display-name">Display name</label>
+                    <input id="create-user-display-name" type="text" placeholder="New User" />
+                  </div>
+                  <div class="field">
+                    <label for="create-user-password">Password</label>
+                    <input id="create-user-password" type="password" placeholder="At least 10 characters" />
+                  </div>
+                  <div class="field">
+                    <label for="create-user-role">Role</label>
+                    <select id="create-user-role">
+                      <option value="admin">admin</option>
+                      <option value="principal">principal</option>
+                      <option value="department_head">department_head</option>
+                      <option value="staff" selected>staff</option>
+                      <option value="clerk">clerk</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="create-user-department">Department</label>
+                    <select id="create-user-department">
+                      <option value="">No department</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="create-user-position">Position</label>
+                    <input id="create-user-position" type="text" placeholder="Coordinator" />
+                  </div>
+                  <label class="checkbox-field">
+                    <input id="create-user-active" type="checkbox" checked />
+                    Active
+                  </label>
+                  <div class="auth-actions">
+                    <button id="create-user-button" class="secondary-button" type="button">
+                      Add User
+                    </button>
+                  </div>
+                </div>
+              </article>
               <div id="user-admin-list" class="admin-list"></div>
             </div>
           </div>
@@ -758,6 +825,22 @@ const createDepartmentButton =
   document.querySelector<HTMLButtonElement>("#create-department-button")!;
 const departmentList = document.querySelector<HTMLDivElement>("#department-list")!;
 const userAdminList = document.querySelector<HTMLDivElement>("#user-admin-list")!;
+const createUserUsernameInput =
+  document.querySelector<HTMLInputElement>("#create-user-username")!;
+const createUserDisplayNameInput =
+  document.querySelector<HTMLInputElement>("#create-user-display-name")!;
+const createUserPasswordInput =
+  document.querySelector<HTMLInputElement>("#create-user-password")!;
+const createUserRoleSelect =
+  document.querySelector<HTMLSelectElement>("#create-user-role")!;
+const createUserDepartmentSelect =
+  document.querySelector<HTMLSelectElement>("#create-user-department")!;
+const createUserPositionInput =
+  document.querySelector<HTMLInputElement>("#create-user-position")!;
+const createUserActiveInput =
+  document.querySelector<HTMLInputElement>("#create-user-active")!;
+const createUserButton =
+  document.querySelector<HTMLButtonElement>("#create-user-button")!;
 const documentForm = document.querySelector<HTMLFormElement>("#document-form")!;
 const documentFileInput =
   document.querySelector<HTMLInputElement>("#document-file")!;
@@ -943,7 +1026,15 @@ if (
   !departmentTaskDetail ||
   !departmentTaskDetailTitle ||
   !departmentTaskDetailMeta ||
-  !departmentTaskDetailBody
+  !departmentTaskDetailBody ||
+  !createUserUsernameInput ||
+  !createUserDisplayNameInput ||
+  !createUserPasswordInput ||
+  !createUserRoleSelect ||
+  !createUserDepartmentSelect ||
+  !createUserPositionInput ||
+  !createUserActiveInput ||
+  !createUserButton
 ) {
   throw new Error("One or more required UI elements were not found");
 }
@@ -1080,6 +1171,7 @@ loginButton.addEventListener("click", async () => {
     await loadWorkItems();
     await loadTasks();
     await loadAssignments();
+    await loadNotifications();
     setStatus("Logged in successfully.", "success");
   } catch (error: unknown) {
     setStatus(
@@ -1175,6 +1267,7 @@ logoutButton.addEventListener("click", async () => {
     await loadWorkItems();
     await loadTasks();
     await loadAssignments();
+    await loadNotifications();
     setStatus("Logged out successfully.", "success");
   } catch (error: unknown) {
     setStatus(
@@ -1237,6 +1330,10 @@ createDepartmentButton.addEventListener("click", async () => {
   } finally {
     createDepartmentButton.disabled = false;
   }
+});
+
+createUserButton.addEventListener("click", async () => {
+  await handleCreateUser();
 });
 
 refreshDocumentsButton.addEventListener("click", async () => {
@@ -1498,13 +1595,14 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
           </div>
           <p><strong>Department:</strong> ${escapeHtml(item.task.ownerDepartmentId ?? "none")}</p>
           <p><strong>Progress:</strong> ${escapeHtml(String(item.task.progressPercent ?? 0))}%</p>
+          <p><strong>Linked Work Item:</strong> ${escapeHtml(item.task.workItemId ?? "none")}</p>
           <div class="auth-actions">
             <button
               class="secondary-button"
               type="button"
               data-open-assignment-task-id="${escapeHtml(item.task.id)}"
             >
-              Open Task
+              Open Task Detail
             </button>
             ${
               item.task.status === "pending"
@@ -1536,7 +1634,7 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
     .querySelectorAll<HTMLButtonElement>("[data-open-assignment-task-id]")
     .forEach((button) => {
       button.addEventListener("click", () => {
-        selectTaskById(button.dataset.openAssignmentTaskId ?? null);
+        void focusTaskById(button.dataset.openAssignmentTaskId ?? null);
       });
     });
 
@@ -1601,15 +1699,8 @@ function renderTaskList(tasks: TaskListItem[]): void {
             type="button"
             data-task-id="${escapeHtml(task.task.id)}"
           >
-            ${
-              selectedTaskId === task.task.id ? "Hide Details" : "View Details"
-            }
+            ${selectedTaskId === task.task.id ? "Hide Task Detail" : "Open Task Detail"}
           </button>
-          ${
-            selectedTaskId === task.task.id
-              ? renderTaskDetail(task)
-              : ""
-          }
         </article>
       `
     )
@@ -1685,8 +1776,8 @@ function hideDepartmentTaskDetail(): void {
 
 function bindTaskListInteractions(container: HTMLElement): void {
   container.querySelectorAll<HTMLButtonElement>("[data-task-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      selectTaskById(button.dataset.taskId ?? null);
+    button.addEventListener("click", async () => {
+      await selectTaskById(button.dataset.taskId ?? null);
     });
   });
 
@@ -1725,6 +1816,49 @@ function bindTaskListInteractions(container: HTMLElement): void {
     .forEach((button) => {
       button.addEventListener("click", async () => {
         await handleRejectAssignmentTask(button.dataset.rejectAssignmentTaskId ?? null);
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-open-linked-work-item-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await openWorkItemWithTab(
+          button.dataset.openLinkedWorkItemId ?? null,
+          button.dataset.openWorkItemTab ?? "info"
+        );
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-open-linked-document-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await openDocumentWithTab(
+          button.dataset.openLinkedDocumentId ?? null,
+          "summary"
+        );
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLInputElement>("[data-response-work-item-id]")
+    .forEach((input) => {
+      input.addEventListener("change", async () => {
+        await handleUploadWorkItemFile(
+          input.dataset.responseWorkItemId ?? "",
+          input
+        );
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-submit-task-response-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleSubmitTaskResponse(
+          button.dataset.submitTaskResponseId ?? null
+        );
       });
     });
 }
@@ -1795,15 +1929,33 @@ function applySelectedTemplate(templateKey: string): void {
   clearAllFieldErrors();
 }
 
-function selectTaskById(taskId: string | null): void {
+async function selectTaskById(taskId: string | null): Promise<void> {
   selectedTaskId = selectedTaskId === taskId ? null : taskId;
   syncSelectedTaskDetail(currentTaskItems);
+  await refreshSelectedTaskContext();
   renderTaskList(currentTaskItems);
+}
+
+async function focusTaskById(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  selectedTaskId = taskId;
+  syncSelectedTaskDetail(currentTaskItems);
+  await refreshSelectedTaskContext();
+  renderTaskList(currentTaskItems);
+  departmentTaskDetail.scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
 }
 
 function syncSelectedTaskDetail(taskItems: TaskListItem[]): void {
   if (taskItems.length === 0) {
     selectedTaskId = null;
+    currentSelectedTaskWorkItem = null;
+    currentSelectedTaskDocument = null;
     return;
   }
 
@@ -1816,7 +1968,81 @@ function syncSelectedTaskDetail(taskItems: TaskListItem[]): void {
 
   if (!selectedTask) {
     selectedTaskId = null;
+    currentSelectedTaskWorkItem = null;
+    currentSelectedTaskDocument = null;
   }
+}
+
+async function refreshSelectedTaskContext(): Promise<void> {
+  if (!selectedTaskId) {
+    currentSelectedTaskWorkItem = null;
+    currentSelectedTaskDocument = null;
+    return;
+  }
+
+  const selectedTask =
+    currentTaskItems.find((item) => item.task.id === selectedTaskId) ?? null;
+
+  if (!selectedTask?.task.workItemId) {
+    currentSelectedTaskWorkItem = null;
+    currentSelectedTaskDocument = null;
+    return;
+  }
+
+  currentSelectedTaskDocument = findLinkedDocumentByWorkItemId(
+    selectedTask.task.workItemId
+  );
+
+  const cachedWorkItem =
+    currentWorkItems.find(
+      (item) => item.workItem.id === selectedTask.task.workItemId
+    ) ?? null;
+
+  if (cachedWorkItem && cachedWorkItem.files.length > 0) {
+    currentSelectedTaskWorkItem = cachedWorkItem;
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/work-items/${encodeURIComponent(selectedTask.task.workItemId)}`,
+      {
+        headers: buildApiHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      currentSelectedTaskWorkItem = cachedWorkItem;
+      return;
+    }
+
+    const detail = (await response.json()) as WorkItemDetailResponse;
+    currentSelectedTaskWorkItem = detail;
+    currentSelectedTaskDocument = findLinkedDocumentByWorkItemId(
+      detail.workItem.id
+    );
+
+    const currentIndex = currentWorkItems.findIndex(
+      (item) => item.workItem.id === detail.workItem.id
+    );
+
+    if (currentIndex >= 0) {
+      currentWorkItems[currentIndex] = detail;
+    } else {
+      currentWorkItems.unshift(detail);
+    }
+  } catch {
+    currentSelectedTaskWorkItem = cachedWorkItem;
+  }
+}
+
+function findLinkedDocumentByWorkItemId(
+  workItemId: string
+): DocumentListItem | null {
+  return (
+    currentDocuments.find((item) => item.document.createdWorkItemId === workItemId) ??
+    null
+  );
 }
 
 function syncLatestResult(taskItems: TaskListItem[]): void {
@@ -1839,6 +2065,11 @@ function syncLatestResult(taskItems: TaskListItem[]): void {
 }
 
 function renderTaskDetail(taskItem: TaskListItem): string {
+  const linkedWorkItem =
+    selectedTaskId === taskItem.task.id ? currentSelectedTaskWorkItem : null;
+  const linkedDocument =
+    selectedTaskId === taskItem.task.id ? currentSelectedTaskDocument : null;
+
   return `
     <div class="task-detail-panel">
       <div class="task-actions">
@@ -1946,6 +2177,119 @@ function renderTaskDetail(taskItem: TaskListItem): string {
       </div>
 
       <div class="task-output">
+        <p class="detail-label">Linked Work Context</p>
+        <div class="detail-value">
+          <p><strong>Work Item:</strong> ${escapeHtml(linkedWorkItem?.workItem.title ?? taskItem.task.workItemId ?? "none")}</p>
+          <p><strong>Work Item Status:</strong> ${escapeHtml(linkedWorkItem?.workItem.status ?? "not loaded")}</p>
+          <p><strong>Source Document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+          ${
+            linkedWorkItem?.workItem.id
+              ? `
+                <div class="auth-actions">
+                  <button
+                    class="secondary-button task-action-button"
+                    type="button"
+                    data-open-linked-work-item-id="${escapeHtml(linkedWorkItem.workItem.id)}"
+                  >
+                    Open Work Item
+                  </button>
+                  ${
+                    linkedDocument?.document.id
+                      ? `
+                        <button
+                          class="secondary-button task-action-button"
+                          type="button"
+                          data-open-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
+                        >
+                          Open Source Document
+                        </button>
+                      `
+                      : ""
+                  }
+                </div>
+              `
+              : ""
+          }
+        </div>
+      </div>
+
+      <div class="task-output">
+        <p class="detail-label">Attachments</p>
+        <div class="detail-value">
+          ${
+            linkedWorkItem && linkedWorkItem.files.length > 0
+              ? linkedWorkItem.files
+                  .map(
+                    (file) => `
+                      <p>${escapeHtml(file.filename)}${file.contentType ? ` (${escapeHtml(file.contentType)})` : ""}</p>
+                    `
+                  )
+                  .join("")
+              : linkedDocument
+                ? `<p>${escapeHtml(linkedDocument.document.filename)} (source document)</p>`
+                : "<p>No files attached to this task yet.</p>"
+          }
+        </div>
+      </div>
+
+      <div class="task-output">
+        <p class="detail-label">Submit Response</p>
+        <div class="detail-value">
+          ${
+            linkedWorkItem?.workItem.id
+              ? `
+                <p>Upload the department response file, then submit it for principal review. The task is not completed until the principal approves it.</p>
+                <div class="auth-actions">
+                  <label class="secondary-button work-item-file-label" for="task-response-file-${escapeHtml(taskItem.task.id)}">
+                    Upload Response File
+                  </label>
+                  <input
+                    id="task-response-file-${escapeHtml(taskItem.task.id)}"
+                    class="hidden"
+                    type="file"
+                    data-response-work-item-id="${escapeHtml(linkedWorkItem.workItem.id)}"
+                  />
+                  <button
+                    class="secondary-button task-action-button"
+                    type="button"
+                    data-open-linked-work-item-id="${escapeHtml(linkedWorkItem.workItem.id)}"
+                    data-open-work-item-tab="files"
+                  >
+                    Open Work Item Files
+                  </button>
+                  ${
+                    taskItem.task.status === "running" ||
+                    taskItem.task.status === "pending"
+                      ? `
+                        <button
+                          class="primary-button task-action-button"
+                          type="button"
+                          data-submit-task-response-id="${escapeHtml(taskItem.task.id)}"
+                        >
+                          Mark Response Submitted
+                        </button>
+                      `
+                      : ""
+                  }
+                </div>
+              `
+              : `
+                <p>No linked work item is available yet, so there is nowhere to submit a response file.</p>
+              `
+          }
+        </div>
+      </div>
+
+      <div class="task-output">
+        <p class="detail-label">Operational Follow-up</p>
+        <div class="detail-value">
+          ${buildTaskFollowUpLines(taskItem, linkedWorkItem, linkedDocument)
+            .map((line) => `<p>${escapeHtml(line)}</p>`)
+            .join("")}
+        </div>
+      </div>
+
+      <div class="task-output">
         <p class="detail-label">Result Content</p>
         <pre class="task-output-text">${escapeHtml(
           taskItem.result?.outputText ?? "No result saved yet."
@@ -1967,6 +2311,42 @@ function buildFullOutput(taskItem: TaskListItem): string {
     "Result Content:",
     taskItem.result?.outputText ?? "No result saved yet."
   ].join("\n");
+}
+
+function buildTaskFollowUpLines(
+  taskItem: TaskListItem,
+  linkedWorkItem: WorkItemListItem | null,
+  linkedDocument: DocumentListItem | null
+): string[] {
+  const lines: string[] = [];
+
+  if (taskItem.task.status === "pending") {
+    lines.push("Task is waiting for department acceptance before execution starts.");
+  } else if (taskItem.task.status === "running") {
+    if (linkedWorkItem?.workItem.status === "in_review") {
+      lines.push("Department response has been submitted. The work item is now waiting for principal review before the task can be marked completed.");
+    } else {
+      lines.push("Task has been accepted and is currently in execution. Keep progress updated and review linked materials.");
+    }
+  } else if (taskItem.task.status === "completed") {
+    lines.push("Task is marked completed. Review the saved result and confirm the output against the assignment requirement.");
+  } else if (taskItem.task.status === "failed") {
+    lines.push("Task execution failed. Review the result content, linked work item context, and decide whether to retry or reassign.");
+  }
+
+  if (linkedWorkItem?.files.length) {
+    lines.push(`There are ${linkedWorkItem.files.length} attached work item file(s) available for review.`);
+  } else if (linkedDocument) {
+    lines.push("Source document is available, but no separate work item file attachments are currently stored.");
+  } else {
+    lines.push("No linked file context is available yet. The assignment may need supporting documents uploaded to the work item.");
+  }
+
+  if (!taskItem.result?.outputText) {
+    lines.push("No response has been saved yet. The assigned user should add progress notes or trigger the next processing step from the linked work item.");
+  }
+
+  return lines;
 }
 
 async function handleCopyAction(button: HTMLButtonElement): Promise<void> {
@@ -2288,6 +2668,9 @@ function resetUserScopedUiState(): void {
   selectedTaskId = null;
   selectedDocumentId = null;
   selectedWorkItemId = null;
+  currentSelectedTaskWorkItem = null;
+  currentSelectedTaskDocument = null;
+  currentNotifications = [];
   currentDocuments = [];
   currentWorkItems = [];
   currentWorkItemAssignments = [];
@@ -2533,6 +2916,19 @@ function renderWorkItemDepartmentOptions(): void {
       )
       .join("")}
   `;
+
+  createUserDepartmentSelect.innerHTML = `
+    <option value="">No department</option>
+    ${currentDepartments
+      .map(
+        (department) => `
+          <option value="${escapeHtml(department.id)}">
+            ${escapeHtml(department.name)}
+          </option>
+        `
+      )
+      .join("")}
+  `;
 }
 
 function renderDepartmentList(): void {
@@ -2608,16 +3004,14 @@ function renderDepartmentList(): void {
 }
 
 function renderUserAdminList(): void {
-  if (currentUsers.length === 0) {
-    userAdminList.innerHTML = `
-      <div class="empty-state">
-        No users available for assignment.
-      </div>
-    `;
-    return;
-  }
-
-  userAdminList.innerHTML = currentUsers
+  const existingUsersMarkup =
+    currentUsers.length === 0
+      ? `
+          <div class="empty-state">
+            No users available for assignment.
+          </div>
+        `
+      : currentUsers
     .map(
       (user) => `
         <article class="admin-item">
@@ -2683,6 +3077,8 @@ function renderUserAdminList(): void {
     )
     .join("");
 
+  userAdminList.innerHTML = existingUsersMarkup;
+
   userAdminList
     .querySelectorAll<HTMLButtonElement>("[data-save-user-id]")
     .forEach((button) => {
@@ -2690,6 +3086,77 @@ function renderUserAdminList(): void {
         await handleSaveUserAssignment(button.dataset.saveUserId ?? null);
       });
     });
+}
+
+async function handleCreateUser(
+  usernameField = createUserUsernameInput,
+  displayNameField = createUserDisplayNameInput,
+  passwordField = createUserPasswordInput,
+  roleField = createUserRoleSelect,
+  departmentField = createUserDepartmentSelect,
+  positionField = createUserPositionInput,
+  activeField = createUserActiveInput,
+  button = createUserButton
+): Promise<void> {
+  const username = usernameField.value.trim().toLowerCase();
+  const displayName = displayNameField.value.trim();
+  const password = passwordField.value;
+
+  if (username.length === 0) {
+    setStatus("Username is required.", "error");
+    return;
+  }
+
+  if (password.length === 0) {
+    setStatus("Password is required.", "error");
+    return;
+  }
+
+  button.disabled = true;
+  setStatus("Creating user...", "loading");
+
+  try {
+    const response = await fetch("/api/users", {
+      method: "POST",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        username,
+        displayName: displayName || null,
+        password,
+        role: roleField.value,
+        departmentId: departmentField.value || null,
+        position: positionField.value.trim() || null,
+        isActive: activeField.checked
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not create the user")
+      );
+    }
+
+    usernameField.value = "";
+    displayNameField.value = "";
+    passwordField.value = "";
+    roleField.value = "staff";
+    departmentField.value = "";
+    positionField.value = "";
+    activeField.checked = true;
+    await loadAdminData();
+    setStatus("User created successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while creating the user.",
+      "error"
+    );
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderRoleOptions(selectedRole: AppUserRole): string {
@@ -2938,6 +3405,25 @@ async function selectDocumentById(documentId: string | null): Promise<void> {
   }
 }
 
+async function openDocumentWithTab(
+  documentId: string | null,
+  tabName: string
+): Promise<void> {
+  if (!documentId) {
+    return;
+  }
+
+  currentView = "documents";
+  renderCurrentView();
+
+  if (selectedDocumentId === documentId) {
+    selectedDocumentId = null;
+  }
+
+  await selectDocumentById(documentId);
+  setActiveDocumentDetailTab(tabName);
+}
+
 function renderDocumentDetail(item: DocumentListItem): void {
   documentDetail.classList.remove("hidden");
   documentDetailTitle.textContent = item.document.filename;
@@ -3096,6 +3582,9 @@ async function handleCreateDocument(): Promise<void> {
     const extractedText = canInlineExtractText
       ? sanitizeUploadedText(await file.text())
       : undefined;
+    const contentBase64 = canInlineExtractText
+      ? undefined
+      : await readFileAsBase64(file);
     const ocrStatus: DocumentOcrStatus =
       canInlineExtractText && extractedText && extractedText.trim().length > 0
         ? "ready"
@@ -3115,6 +3604,7 @@ async function handleCreateDocument(): Promise<void> {
         sizeBytes: file.size,
         metadata,
         extractedText,
+        contentBase64,
         ocrStatus
       })
     });
@@ -3164,6 +3654,18 @@ function isInlineExtractableDocument(file: File): boolean {
 
 function sanitizeUploadedText(value: string): string {
   return value.replaceAll("\u0000", "").trim();
+}
+
+async function readFileAsBase64(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return window.btoa(binary);
 }
 
 async function handleAnalyzeDocument(documentId: string): Promise<void> {
@@ -3338,8 +3840,8 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
   workItemList
     .querySelectorAll<HTMLButtonElement>("[data-work-item-id]")
     .forEach((button) => {
-      button.addEventListener("click", () => {
-        selectWorkItemById(button.dataset.workItemId ?? null);
+      button.addEventListener("click", async () => {
+        await selectWorkItemById(button.dataset.workItemId ?? null);
       });
     });
 }
@@ -3372,6 +3874,33 @@ async function loadAssignments(): Promise<void> {
     renderAssignmentsList([]);
     renderOverview();
     renderReports();
+  }
+}
+
+async function loadNotifications(): Promise<void> {
+  if (!currentSessionUserId) {
+    currentNotifications = [];
+    renderOverview();
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/notifications", {
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not load notifications")
+      );
+    }
+
+    const data = (await response.json()) as NotificationsResponse;
+    currentNotifications = data.notifications;
+    renderOverview();
+  } catch {
+    currentNotifications = [];
+    renderOverview();
   }
 }
 
@@ -3440,7 +3969,7 @@ function renderAssignmentsList(assignments: Assignment[]): void {
       button.addEventListener("click", () => {
         currentView = "department-tasks";
         renderCurrentView();
-        selectTaskById(button.dataset.openAssignmentTaskId ?? null);
+        void focusTaskById(button.dataset.openAssignmentTaskId ?? null);
       });
     });
 
@@ -3461,7 +3990,7 @@ function renderAssignmentsList(assignments: Assignment[]): void {
       button.addEventListener("click", () => {
         currentView = "department-tasks";
         renderCurrentView();
-        selectTaskById(button.dataset.openAssignmentTaskId ?? null);
+        void focusTaskById(button.dataset.openAssignmentTaskId ?? null);
       });
     });
 
@@ -3682,7 +4211,8 @@ function renderOverview(): void {
     documentCount > 0 ? `${documentCount} intake documents are currently visible.` : null,
     overdueCount > 0 ? `${overdueCount} assignments are overdue.` : null,
     waitingCount > 0 ? `${waitingCount} work items are still waiting review.` : null,
-    queueCount > 0 ? `${queueCount} department tasks are visible in the queue.` : null
+    queueCount > 0 ? `${queueCount} department tasks are visible in the queue.` : null,
+    ...currentNotifications.slice(0, 4).map((notification) => notification.message)
   ].filter(Boolean) as string[];
 
   needsAttentionPanel.innerHTML =
@@ -3703,6 +4233,9 @@ function renderOverview(): void {
         `;
 
   const recentActivity = [
+    ...currentNotifications
+      .slice(0, 2)
+      .map((notification) => `Notification: ${notification.message}`),
     ...currentDocuments.slice(0, 2).map(
       (item) => `Document uploaded: ${item.document.filename}`
     ),
@@ -3882,8 +4415,31 @@ async function selectWorkItemById(workItemId: string | null): Promise<void> {
   }
 }
 
+async function openWorkItemWithTab(
+  workItemId: string | null,
+  tabName: string
+): Promise<void> {
+  if (!workItemId) {
+    return;
+  }
+
+  currentView = "work-items";
+  renderCurrentView();
+
+  if (selectedWorkItemId === workItemId) {
+    selectedWorkItemId = null;
+  }
+
+  await selectWorkItemById(workItemId);
+  setActiveWorkItemDetailTab(tabName);
+}
+
 function renderWorkItemDetail(item: WorkItemListItem): void {
   const currentAssignment = currentWorkItemAssignments[0] ?? null;
+  const linkedDocument =
+    currentDocuments.find(
+      (documentItem) => documentItem.document.createdWorkItemId === item.workItem.id
+    ) ?? null;
   workItemDetail.classList.remove("hidden");
   workItemDetailTitle.textContent = item.workItem.title;
   workItemDetailMeta.textContent = [
@@ -3950,6 +4506,10 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
             currentAssignment ? `Assigned (${currentAssignment.priority})` : "Not assigned yet"
           )}</p>
         </div>
+        <div>
+          <p class="detail-label">Source Document</p>
+          <p class="detail-value">${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+        </div>
       </div>
     </section>
     <section class="tab-panel hidden" data-detail-panel="assignment">
@@ -3971,12 +4531,36 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
               : "<p>No assignment exists for this work item yet.</p>"
           }
         </div>
+        ${
+          currentAssignment
+            ? `
+              <div class="auth-actions">
+                <button
+                  id="open-linked-task-button"
+                  class="secondary-button"
+                  type="button"
+                >
+                  Open Linked Task
+                </button>
+              </div>
+            `
+            : ""
+        }
       </div>
     </section>
     <section class="tab-panel hidden" data-detail-panel="files">
       <div class="task-output">
         <p class="detail-label">Files</p>
         <div class="work-item-files">
+          ${
+            linkedDocument
+              ? `
+                <div class="work-item-file-chip source-file-chip">
+                  Source: ${escapeHtml(linkedDocument.document.filename)}
+                </div>
+              `
+              : ""
+          }
           ${
             item.files.length > 0
               ? item.files
@@ -3988,7 +4572,9 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                     `
                   )
                   .join("")
-              : '<p class="detail-value">No files uploaded yet.</p>'
+              : linkedDocument
+                ? '<p class="detail-value">No separate response files uploaded yet. The source document above is the current working attachment.</p>'
+                : '<p class="detail-value">No files uploaded yet.</p>'
           }
         </div>
       </div>
@@ -4096,6 +4682,14 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
   assignButton?.addEventListener("click", async () => {
     await handleAssignWorkItem(item.workItem.id);
   });
+
+  workItemDetailBody
+    .querySelector<HTMLButtonElement>("#open-linked-task-button")
+    ?.addEventListener("click", async () => {
+      currentView = "department-tasks";
+      renderCurrentView();
+      await focusTaskById(currentAssignment?.taskId ?? null);
+    });
 
   workItemDetailBody
     .querySelectorAll<HTMLButtonElement>("[data-detail-tab]")
@@ -4311,7 +4905,9 @@ async function handleUploadWorkItemFile(
   }
 
   try {
-    const contentText = await file.text();
+    const contentText = isInlineExtractableDocument(file)
+      ? sanitizeUploadedText(await file.text())
+      : undefined;
     const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/files`, {
       method: "POST",
       headers: buildApiHeaders({
@@ -4334,7 +4930,12 @@ async function handleUploadWorkItemFile(
     input.value = "";
     await loadWorkItems();
     await selectWorkItemById(workItemId);
-    setStatus("File uploaded successfully.", "success");
+    setStatus(
+      contentText
+        ? "Response file uploaded successfully."
+        : "Response file metadata uploaded. Binary preview/download is not available in the current workflow yet.",
+      "success"
+    );
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
@@ -4389,6 +4990,8 @@ async function handleAcceptAssignmentTask(taskId: string | null): Promise<void> 
     }
 
     await loadTasks();
+    await loadNotifications();
+    await focusTaskById(taskId);
     setStatus("Assignment accepted.", "success");
   } catch (error: unknown) {
     setStatus(
@@ -4418,12 +5021,49 @@ async function handleRejectAssignmentTask(taskId: string | null): Promise<void> 
     }
 
     await loadTasks();
+    await loadNotifications();
+    hideDepartmentTaskDetail();
     setStatus("Assignment rejected.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
         : "Something went wrong while rejecting the assignment.",
+      "error"
+    );
+  }
+}
+
+async function handleSubmitTaskResponse(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/submit-response`,
+      {
+        method: "POST",
+        headers: buildApiHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not submit the response")
+      );
+    }
+
+    await loadTasks();
+    await loadWorkItems();
+    await loadNotifications();
+    await focusTaskById(taskId);
+    setStatus("Response submitted. Waiting for principal approval before completion.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while submitting the response.",
       "error"
     );
   }
@@ -4672,4 +5312,5 @@ void (async () => {
   await loadWorkItems();
   await loadTasks();
   await loadAssignments();
+  await loadNotifications();
 })();

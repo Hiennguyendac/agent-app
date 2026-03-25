@@ -2,6 +2,10 @@
 
 Monorepo for the current production task flow.
 
+## Planning Docs
+
+- [OpenClaw integration plan](./docs/openclaw-integration-plan.md)
+
 ## Production Apps
 
 - `apps/api`: Node/TypeScript API, runs under PM2

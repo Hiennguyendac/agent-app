@@ -190,6 +190,32 @@ export async function createAssignmentNotification(input: {
   return mapNotificationRow(result.rows[0]);
 }
 
+export async function listNotifications(
+  accessContext: TaskAccessContext
+): Promise<Notification[]> {
+  const access = buildNotificationAccessWhereClause(1, accessContext);
+  const result = await getDbPool().query(
+    `
+      SELECT
+        id,
+        message,
+        recipient_department_id,
+        recipient_user_id,
+        assignment_id,
+        work_item_id,
+        created_at,
+        is_read
+      FROM notifications
+      ${access.clause}
+      ORDER BY created_at DESC
+      LIMIT 50
+    `,
+    access.values
+  );
+
+  return result.rows.map(mapNotificationRow);
+}
+
 function buildAssignmentAccessWhereClause(
   startIndex: number,
   accessContext: TaskAccessContext
@@ -211,6 +237,37 @@ function buildAssignmentAccessWhereClause(
   if (accessContext.userId) {
     return {
       clause: `WHERE t.owner_id = $${startIndex}`,
+      values: [accessContext.userId]
+    };
+  }
+
+  return {
+    clause: "WHERE 1 = 0",
+    values: []
+  };
+}
+
+function buildNotificationAccessWhereClause(
+  startIndex: number,
+  accessContext: TaskAccessContext
+): { clause: string; values: string[] } {
+  if (accessContext.role === "principal" || accessContext.role === "admin") {
+    return {
+      clause: "",
+      values: []
+    };
+  }
+
+  if (accessContext.role === "department_head" && accessContext.departmentId) {
+    return {
+      clause: `WHERE recipient_department_id = $${startIndex}`,
+      values: [accessContext.departmentId]
+    };
+  }
+
+  if (accessContext.userId) {
+    return {
+      clause: `WHERE recipient_user_id = $${startIndex}`,
       values: [accessContext.userId]
     };
   }

@@ -350,6 +350,27 @@ function buildWorkItemAccessWhereClause(
     };
   }
 
+  if (accessContext.role === "department_head" && accessContext.departmentId) {
+    return {
+      clause: `WHERE (
+        w.department_id = $${startIndex}
+        OR w.assigned_to_user_id = $${startIndex + 1}
+        OR EXISTS (
+          SELECT 1
+          FROM assignments a
+          JOIN tasks t
+            ON t.assignment_id = a.id
+          WHERE a.work_item_id = w.id
+            AND (
+              a.main_department_id = $${startIndex}
+              OR t.owner_department_id = $${startIndex}
+            )
+        )
+      )`,
+      values: [accessContext.departmentId, accessContext.userId]
+    };
+  }
+
   return {
     clause: `WHERE w.assigned_to_user_id = $${startIndex}`,
     values: [accessContext.userId]

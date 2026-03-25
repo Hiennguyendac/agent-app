@@ -26,10 +26,11 @@ body {
 }
 
 .app-shell {
-  width: min(1440px, calc(100% - 32px));
+  width: min(1600px, calc(100% - 24px));
   margin: 16px auto;
   display: grid;
   gap: 20px;
+  min-height: calc(100vh - 32px);
 }
 
 @media (min-width: 1100px) {
@@ -40,11 +41,15 @@ body {
 }
 
 .sidebar {
-  background: linear-gradient(180deg, #0f172a 0%, #16233b 100%);
+  background: linear-gradient(180deg, #0d1525 0%, #18243a 100%);
   color: #e2e8f0;
   border-radius: 28px;
   padding: 24px 18px;
   box-shadow: 0 28px 50px rgba(15, 23, 42, 0.22);
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
 }
 
 .sidebar .eyebrow,
@@ -98,6 +103,7 @@ body {
 .app-main {
   display: grid;
   gap: 18px;
+  min-height: calc(100vh - 32px);
 }
 
 .topbar {
@@ -144,6 +150,7 @@ body {
 
 .content-view {
   display: block;
+  min-height: 0;
 }
 
 .overview-grid,
@@ -173,8 +180,8 @@ body {
 .metric-card {
   padding: 18px;
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94) 0%, rgba(17, 24, 39, 0.88) 100%);
-  border: 1px solid rgba(56, 189, 248, 0.16);
+  background: linear-gradient(180deg, rgba(13, 23, 38, 0.98) 0%, rgba(18, 29, 46, 0.94) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.22);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
@@ -193,11 +200,11 @@ textarea {
 }
 
 .panel {
-  background: rgba(10, 18, 30, 0.84);
-  border: 1px solid rgba(96, 165, 250, 0.12);
+  background: rgba(9, 16, 28, 0.92);
+  border: 1px solid rgba(96, 165, 250, 0.18);
   border-radius: 24px;
   padding: 24px;
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(10px);
 }
 
@@ -277,8 +284,8 @@ h3 {
 .admin-card {
   padding: 14px;
   border-radius: 14px;
-  background: rgba(15, 23, 42, 0.82);
-  border: 1px solid rgba(96, 165, 250, 0.14);
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(96, 165, 250, 0.18);
 }
 
 .admin-card h3 {
@@ -311,7 +318,7 @@ h3 {
 
 @media (min-width: 960px) {
   .work-item-layout {
-    grid-template-columns: minmax(360px, 440px) 1fr;
+    grid-template-columns: minmax(380px, 460px) minmax(0, 1fr);
     align-items: start;
   }
 }
@@ -333,10 +340,16 @@ h3 {
   display: inline-flex;
   padding: 8px 12px;
   border-radius: 999px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  color: #1e3a8a;
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.26);
+  color: #dbeafe;
   font-weight: 600;
+}
+
+.source-file-chip {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(74, 222, 128, 0.28);
+  color: #dcfce7;
 }
 
 .work-item-queue {
@@ -382,8 +395,8 @@ h3 {
 .admin-item {
   padding: 12px;
   border-radius: 12px;
-  border: 1px solid rgba(96, 165, 250, 0.14);
-  background: rgba(15, 23, 42, 0.76);
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  background: rgba(15, 23, 42, 0.86);
 }
 
 .admin-user-header {
@@ -518,8 +531,8 @@ h3 {
 .result-card {
   margin-top: 20px;
   border-radius: 16px;
-  background: rgba(12, 22, 36, 0.88);
-  border: 1px solid rgba(96, 165, 250, 0.18);
+  background: rgba(11, 19, 32, 0.96);
+  border: 1px solid rgba(96, 165, 250, 0.22);
   padding: 16px;
 }
 
@@ -541,14 +554,15 @@ h3 {
 .task-list {
   display: grid;
   gap: 14px;
+  align-content: start;
 }
 
 .task-card {
-  border: 1px solid rgba(96, 165, 250, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.18);
   border-radius: 18px;
   padding: 18px;
-  background: linear-gradient(180deg, rgba(10, 18, 30, 0.95) 0%, rgba(15, 23, 42, 0.84) 100%);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.22);
+  background: linear-gradient(180deg, rgba(11, 20, 34, 0.98) 0%, rgba(18, 29, 46, 0.92) 100%);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
 }
 
 .task-card p {
@@ -564,8 +578,8 @@ h3 {
   margin-top: 16px;
   padding: 18px;
   border-radius: 18px;
-  background: rgba(8, 15, 26, 0.88);
-  border: 1px solid rgba(96, 165, 250, 0.14);
+  background: rgba(7, 13, 23, 0.96);
+  border: 1px solid rgba(96, 165, 250, 0.2);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
@@ -611,7 +625,7 @@ h3 {
 
 .detail-value {
   margin: 0;
-  color: #dbeafe;
+  color: #e7eef8;
 }
 
 .owner-badge {
@@ -751,4 +765,22 @@ h3 {
 .task-card.is-selected {
   border-color: rgba(56, 189, 248, 0.38);
   box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.16), 0 16px 30px rgba(0, 0, 0, 0.3);
+}
+
+@media (min-width: 960px) {
+  .work-item-layout > .task-list {
+    max-height: calc(100vh - 290px);
+    overflow: auto;
+    padding-right: 6px;
+  }
+
+  .work-item-layout > .result-card,
+  #department-task-detail,
+  #work-item-detail,
+  #document-detail {
+    position: sticky;
+    top: 0;
+    max-height: calc(100vh - 290px);
+    overflow: auto;
+  }
 }
