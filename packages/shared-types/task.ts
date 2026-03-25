@@ -50,6 +50,18 @@ export interface Task {
    */
   ownerId?: string;
 
+  workItemId?: string;
+
+  assignmentId?: string;
+
+  ownerDepartmentId?: string;
+
+  progressPercent?: number;
+
+  acceptedAt?: string;
+
+  completedAt?: string;
+
   /**
    * The current state of the task.
    */

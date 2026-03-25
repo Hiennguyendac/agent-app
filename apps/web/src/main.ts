@@ -6,10 +6,12 @@ import "./styles.css";
  * They are kept small and local so the beginner can understand
  * the data used by this page without needing a framework first.
  */
-type TaskType = "growth";
+type TaskType = "growth" | "school_workflow";
 type TaskStatus = "pending" | "running" | "completed" | "failed";
 type AppUserRole = "admin" | "principal" | "department_head" | "staff" | "clerk";
-type WorkItemStatus = "draft" | "waiting_review" | "in_review" | "completed";
+type WorkItemStatus = "draft" | "waiting_review" | "assigned" | "in_review" | "completed";
+type AssignmentPriority = "low" | "normal" | "high" | "urgent";
+type DocumentOcrStatus = "pending" | "ready" | "failed";
 
 interface Task {
   id: string;
@@ -19,6 +21,12 @@ interface Task {
   audience: string;
   notes?: string;
   ownerId?: string;
+  workItemId?: string;
+  assignmentId?: string;
+  ownerDepartmentId?: string;
+  progressPercent?: number;
+  acceptedAt?: string;
+  completedAt?: string;
   status: TaskStatus;
   createdAt: string;
 }
@@ -136,6 +144,72 @@ interface AiAnalysisResponse {
   analysis: AiAnalysis;
 }
 
+interface Document {
+  id: string;
+  filename: string;
+  contentType?: string;
+  sizeBytes?: number;
+  metadata?: Record<string, unknown>;
+  extractedText?: string;
+  ocrStatus: DocumentOcrStatus;
+  uploadedByUserId: string;
+  createdWorkItemId?: string;
+  createdAt: string;
+}
+
+interface DocumentAnalysis {
+  id: string;
+  documentId: string;
+  summary: string;
+  rawOutput: string;
+  model?: string;
+  createdByUserId?: string;
+  createdAt: string;
+}
+
+interface DocumentListItem {
+  document: Document;
+  latestAnalysis?: DocumentAnalysis;
+}
+
+interface DocumentsResponse {
+  documents: DocumentListItem[];
+}
+
+interface DocumentResponse {
+  document: Document;
+}
+
+interface DocumentDetailResponse extends DocumentListItem {}
+
+interface DocumentAnalysisResponse {
+  analysis: DocumentAnalysis;
+}
+
+interface CreateWorkItemFromDocumentResponse {
+  document: Document;
+  workItem: WorkItem;
+}
+
+interface Assignment {
+  id: string;
+  workItemId: string;
+  mainDepartmentId: string;
+  coordinatingDepartmentIds: string[];
+  deadline?: string;
+  priority: AssignmentPriority;
+  outputRequirement?: string;
+  note?: string;
+  taskId: string;
+  createdByUserId: string;
+  createdAt: string;
+  active: boolean;
+}
+
+interface AssignmentsResponse {
+  assignments: Assignment[];
+}
+
 interface DepartmentsResponse {
   departments: Department[];
 }
@@ -172,8 +246,26 @@ let currentSessionUserId: string | null = null;
 let currentSessionUser: AppUserProfile | null = null;
 let currentDepartments: Department[] = [];
 let currentUsers: AppUserProfile[] = [];
+let currentDocuments: DocumentListItem[] = [];
+let selectedDocumentId: string | null = null;
 let currentWorkItems: WorkItemListItem[] = [];
 let selectedWorkItemId: string | null = null;
+let currentWorkItemAssignments: Assignment[] = [];
+let currentAssignments: Assignment[] = [];
+let currentView:
+  | "overview"
+  | "documents"
+  | "work-items"
+  | "assignments"
+  | "department-tasks"
+  | "approvals"
+  | "reports"
+  | "admin"
+  | "account"
+  | "legacy" = "documents";
+let currentDocumentSearch = "";
+let currentWorkItemSearch = "";
+let currentDepartmentTaskStatusFilter = "all";
 
 const TASK_TEMPLATES: Record<string, TaskTemplate> = {
   blogSeo: {
@@ -213,260 +305,417 @@ if (!app) {
 }
 
 app.innerHTML = `
-  <main class="page">
-    <section class="panel">
-      <div class="panel-header">
-        <p class="eyebrow">Agent App</p>
-        <h1>Growth Task Dashboard</h1>
-        <p class="intro">
-          Create one Growth task and see the saved tasks from the MVP API.
-        </p>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <p class="eyebrow">School Workflow App</p>
+        <h1>Internal Operations</h1>
+        <p class="intro">Document intake, work items, assignments, and department execution from one place.</p>
       </div>
+      <nav class="sidebar-nav" aria-label="Primary">
+        <button class="nav-button" type="button" data-view="overview">Overview</button>
+        <button class="nav-button" type="button" data-view="documents">Documents</button>
+        <button class="nav-button" type="button" data-view="work-items">Work Items</button>
+        <button class="nav-button" type="button" data-view="assignments">Assignments</button>
+        <button class="nav-button" type="button" data-view="department-tasks">Department Tasks</button>
+        <button class="nav-button" type="button" data-view="approvals">Approvals</button>
+        <button class="nav-button" type="button" data-view="reports">Reports</button>
+        <button class="nav-button" type="button" data-view="admin">Admin</button>
+        <button class="nav-button" type="button" data-view="account">Account</button>
+        <button class="nav-button" type="button" data-view="legacy">Legacy</button>
+      </nav>
+      <section class="sidebar-account">
+        <p class="detail-label">Active Identity</p>
+        <p id="session-user" class="mock-user-active">Session user: checking...</p>
+        <p id="identity-source" class="identity-source-note">Active identity: checking...</p>
+        <p id="active-user" class="identity-source-note"></p>
+      </section>
+    </aside>
 
-      <section class="mock-user-panel" aria-label="Current mock user">
-        <div class="mock-user-header">
-          <div>
-            <p class="detail-label">Auth v1</p>
-            <p id="session-user" class="mock-user-active">Session user: checking...</p>
-            <p id="identity-source" class="identity-source-note">Active identity: checking...</p>
-          </div>
+    <section class="app-main">
+      <header class="topbar panel">
+        <div class="topbar-copy">
+          <p id="view-eyebrow" class="eyebrow">Overview</p>
+          <h2 id="view-title">Document Intake Overview</h2>
+          <p id="view-description" class="intro">
+            Upload school documents, review extracted intake, and create work items from verified records.
+          </p>
         </div>
-        <div class="auth-panel-row">
-          <div class="field">
-            <label for="username">Username</label>
-            <input
-              id="username"
-              name="username"
-              type="text"
-              placeholder="alice"
-            />
-          </div>
-          <div class="field">
-            <label for="password">Password</label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              placeholder="Enter password"
-            />
-          </div>
+        <section class="account-card" aria-label="Current account">
+          <p class="detail-label">User Console</p>
+          <p class="detail-value">Session, password, and dev fallback controls now live in the dedicated Account view.</p>
           <div class="auth-actions">
-            <button id="login-button" class="primary-button" type="button">
-              Log In
-            </button>
-            <button id="logout-button" class="secondary-button" type="button">
-              Log Out
-            </button>
+            <button class="secondary-button" type="button" data-view="account">Open Account</button>
           </div>
-        </div>
-        <div class="auth-panel-row">
-          <div class="field">
-            <label for="current-password">Current password</label>
-            <input
-              id="current-password"
-              name="currentPassword"
-              type="password"
-              placeholder="Current password"
-            />
-          </div>
-          <div class="field">
-            <label for="new-password">New password</label>
-            <input
-              id="new-password"
-              name="newPassword"
-              type="password"
-              placeholder="New password"
-            />
-          </div>
-          <div class="auth-actions">
-            <button id="change-password-button" class="secondary-button" type="button">
-              Change Password
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section class="mock-user-panel" aria-label="Mock user fallback">
-        <div class="mock-user-header">
-          <div>
-            <p class="detail-label">Dev Fallback</p>
-            <p id="active-user" class="mock-user-active"></p>
-          </div>
-        </div>
-        <div class="field">
-          <label for="mock-user-id">Mock user id</label>
-          <input
-            id="mock-user-id"
-            name="mockUserId"
-            type="text"
-            placeholder="user-a"
-            value="${escapeHtml(currentMockUserId)}"
-          />
-        </div>
-      </section>
-
-      <section id="admin-panel" class="mock-user-panel hidden" aria-label="School admin">
-        <div class="mock-user-header">
-          <div>
-            <p class="detail-label">School Admin</p>
-            <p class="mock-user-active">Principal-only setup for departments and user assignment.</p>
-          </div>
-        </div>
-        <div class="admin-section">
-          <div class="admin-card">
-            <h3>Departments</h3>
-            <div class="admin-form-row">
-              <div class="field">
-                <label for="department-name">Department name</label>
-                <input
-                  id="department-name"
-                  name="departmentName"
-                  type="text"
-                  placeholder="Academic Affairs"
-                />
-              </div>
-              <div class="field">
-                <label for="department-code">Department code</label>
-                <input
-                  id="department-code"
-                  name="departmentCode"
-                  type="text"
-                  placeholder="ACADEMIC"
-                />
-              </div>
-              <div class="auth-actions">
-                <button id="create-department-button" class="secondary-button" type="button">
-                  Add Department
-                </button>
-              </div>
-            </div>
-            <div id="department-list" class="admin-list"></div>
-          </div>
-
-          <div class="admin-card">
-            <h3>User Assignment</h3>
-            <div id="user-admin-list" class="admin-list"></div>
-          </div>
-        </div>
-      </section>
-
-      <form id="task-form" class="task-form" novalidate>
-        <div class="field">
-          <label for="template">Template</label>
-          <select id="template" name="template">
-            <option value="">Choose a content template</option>
-            <option value="blogSeo">Blog SEO</option>
-            <option value="facebookPost">Facebook Post</option>
-            <option value="salesEmail">Sales Email</option>
-            <option value="landingPageCopy">Landing Page Copy</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="title">Task title</label>
-          <input id="title" name="title" type="text" placeholder="Write blog ideas" required />
-          <p id="title-error" class="field-error hidden" aria-live="polite"></p>
-        </div>
-
-        <div class="field">
-          <label for="goal">Goal</label>
-          <textarea id="goal" name="goal" rows="3" placeholder="Create content ideas for a small agency" required></textarea>
-          <p id="goal-error" class="field-error hidden" aria-live="polite"></p>
-        </div>
-
-        <div class="field">
-          <label for="audience">Audience</label>
-          <input id="audience" name="audience" type="text" placeholder="Small business owners" required />
-          <p id="audience-error" class="field-error hidden" aria-live="polite"></p>
-        </div>
-
-        <div class="field">
-          <label for="notes">Notes</label>
-          <textarea id="notes" name="notes" rows="3" placeholder="Optional extra notes"></textarea>
-        </div>
-
-        <button id="submit-button" class="primary-button" type="submit">
-          Create Growth Task
-        </button>
-      </form>
+        </section>
+      </header>
 
       <p id="status-message" class="status-message" aria-live="polite"></p>
 
-      <section id="latest-result" class="result-card hidden" aria-live="polite">
-        <h2>Latest Growth Result</h2>
-        <p id="result-meta" class="result-meta"></p>
-        <pre id="result-text" class="result-text"></pre>
-      </section>
-    </section>
-
-    <section class="panel">
-      <div class="tasks-header">
-        <div>
-          <p class="eyebrow">Saved Tasks</p>
-          <h2>Task List</h2>
+      <section id="overview-view" class="content-view">
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Overview</p>
+              <h3>Operational KPIs</h3>
+            </div>
+            <div id="overview-cards" class="overview-cards"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Attention</p>
+              <h3>Needs Attention</h3>
+            </div>
+            <div id="needs-attention-panel" class="admin-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Activity</p>
+              <h3>Recent Activity</h3>
+            </div>
+            <div id="recent-activity-panel" class="admin-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Departments</p>
+              <h3>By Department</h3>
+            </div>
+            <div id="by-department-panel" class="admin-list"></div>
+          </section>
         </div>
-        <button id="refresh-button" class="secondary-button" type="button">
-          Refresh List
-        </button>
-      </div>
-
-      <div id="task-list" class="task-list"></div>
-    </section>
-
-    <section class="panel panel-wide">
-      <div class="tasks-header">
-        <div>
-          <p class="eyebrow">School Workflow</p>
-          <h2>Work Items</h2>
-        </div>
-        <button id="refresh-work-items-button" class="secondary-button" type="button">
-          Refresh Work Items
-        </button>
-      </div>
-
-      <form id="work-item-form" class="task-form" novalidate>
-        <div class="field">
-          <label for="work-item-title">Work item title</label>
-          <input
-            id="work-item-title"
-            name="workItemTitle"
-            type="text"
-            placeholder="Teacher leave request review"
-          />
-        </div>
-        <div class="field">
-          <label for="work-item-description">Description</label>
-          <textarea
-            id="work-item-description"
-            name="workItemDescription"
-            rows="3"
-            placeholder="Describe the school workflow item"
-          ></textarea>
-        </div>
-        <div class="field">
-          <label for="work-item-department">Department</label>
-          <select id="work-item-department" name="workItemDepartment">
-            <option value="">No department</option>
-          </select>
-        </div>
-        <button id="create-work-item-button" class="primary-button" type="submit">
-          Create Work Item
-        </button>
-      </form>
-
-      <section id="principal-queue" class="result-card hidden">
-        <h3>Waiting Review Queue</h3>
-        <div id="principal-queue-list" class="work-item-queue"></div>
       </section>
 
-      <div class="work-item-layout">
-        <div id="work-item-list" class="task-list"></div>
-        <section id="work-item-detail" class="result-card hidden">
-          <h3 id="work-item-detail-title">Work Item Detail</h3>
-          <p id="work-item-detail-meta" class="result-meta"></p>
-          <div id="work-item-detail-body" class="work-item-detail-body"></div>
+      <section id="documents-view" class="content-view hidden">
+        <div class="panel">
+          <div class="tasks-header">
+            <div>
+              <p class="eyebrow">Intake</p>
+              <h3>Documents</h3>
+            </div>
+            <button id="refresh-documents-button" class="secondary-button" type="button">Refresh Documents</button>
+          </div>
+
+          <div class="toolbar-row">
+            <div class="field">
+              <label for="document-search">Search documents</label>
+              <input id="document-search" type="text" placeholder="Search filename, extracted text, uploader" />
+            </div>
+          </div>
+
+          <form id="document-form" class="task-form" novalidate>
+            <div class="field">
+              <label for="document-file">Upload school document</label>
+              <input id="document-file" name="documentFile" type="file" />
+            </div>
+            <div class="field">
+              <label for="document-title">Document note</label>
+              <input id="document-title" name="documentTitle" type="text" placeholder="Incoming request from parent or department" />
+            </div>
+            <div class="field">
+              <label for="document-metadata">Metadata JSON</label>
+              <textarea id="document-metadata" name="documentMetadata" rows="3" placeholder='{"source":"front-office","channel":"email"}'></textarea>
+            </div>
+            <button id="create-document-button" class="primary-button" type="submit">Upload Document</button>
+          </form>
+
+          <div class="work-item-layout">
+            <div id="document-list" class="task-list"></div>
+            <section id="document-detail" class="result-card hidden">
+              <h3 id="document-detail-title">Document Detail</h3>
+              <p id="document-detail-meta" class="result-meta"></p>
+              <div id="document-detail-body" class="work-item-detail-body"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="work-items-view" class="content-view hidden">
+        <div class="panel">
+          <div class="tasks-header">
+            <div>
+              <p class="eyebrow">School Workflow</p>
+              <h3>Work Items</h3>
+            </div>
+            <button id="refresh-work-items-button" class="secondary-button" type="button">Refresh Work Items</button>
+          </div>
+
+          <div class="toolbar-row">
+            <div class="field">
+              <label for="work-item-search">Search work items</label>
+              <input id="work-item-search" type="text" placeholder="Search title, description, creator" />
+            </div>
+          </div>
+
+          <form id="work-item-form" class="task-form" novalidate>
+            <div class="field">
+              <label for="work-item-title">Work item title</label>
+              <input id="work-item-title" name="workItemTitle" type="text" placeholder="Teacher leave request review" />
+            </div>
+            <div class="field">
+              <label for="work-item-description">Description</label>
+              <textarea id="work-item-description" name="workItemDescription" rows="3" placeholder="Describe the school workflow item"></textarea>
+            </div>
+            <div class="field">
+              <label for="work-item-department">Department</label>
+              <select id="work-item-department" name="workItemDepartment">
+                <option value="">No department</option>
+              </select>
+            </div>
+            <button id="create-work-item-button" class="primary-button" type="submit">Create Work Item</button>
+          </form>
+
+          <section id="department-task-queue" class="result-card hidden">
+            <h3>Department Task Queue</h3>
+            <div id="department-task-queue-list" class="work-item-queue"></div>
+          </section>
+
+          <div class="work-item-layout">
+            <div id="work-item-list" class="task-list"></div>
+            <section id="work-item-detail" class="result-card hidden">
+              <h3 id="work-item-detail-title">Work Item Detail</h3>
+              <p id="work-item-detail-meta" class="result-meta"></p>
+              <div id="work-item-detail-body" class="work-item-detail-body"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="assignments-view" class="content-view hidden">
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Assignments</p>
+              <h3>Waiting Assignment Queue</h3>
+            </div>
+            <div id="assignment-queue" class="work-item-queue"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Assignments</p>
+              <h3>Assignment Workspace</h3>
+            </div>
+            <div id="assignment-workspace" class="admin-list"></div>
+            <div id="assignment-list" class="admin-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="department-tasks-view" class="content-view hidden">
+        <div class="panel">
+          <div class="tasks-header">
+            <div>
+              <p class="eyebrow">Execution</p>
+              <h3>Department Tasks</h3>
+            </div>
+            <button id="refresh-button" class="secondary-button" type="button">Refresh Tasks</button>
+          </div>
+          <div class="toolbar-row">
+            <div class="status-filter-tabs" id="department-task-status-tabs">
+              <button class="tab-button is-active" type="button" data-status-filter="all">All</button>
+              <button class="tab-button" type="button" data-status-filter="pending">Pending</button>
+              <button class="tab-button" type="button" data-status-filter="running">Running</button>
+              <button class="tab-button" type="button" data-status-filter="completed">Completed</button>
+              <button class="tab-button" type="button" data-status-filter="failed">Failed</button>
+            </div>
+            <select id="department-task-status-filter" class="hidden">
+              <option value="all">All</option>
+              <option value="pending">Pending</option>
+              <option value="running">Running</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+          <div class="work-item-layout">
+            <div id="task-list" class="task-list"></div>
+            <section id="department-task-detail" class="result-card hidden">
+              <h3 id="department-task-detail-title">Task Detail</h3>
+              <p id="department-task-detail-meta" class="result-meta"></p>
+              <div id="department-task-detail-body" class="work-item-detail-body"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="approvals-view" class="content-view hidden">
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Approvals</p>
+              <h3>Approval Staging</h3>
+            </div>
+            <div id="approvals-queue" class="work-item-queue"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Approvals</p>
+              <h3>Module Direction</h3>
+            </div>
+            <div id="approvals-assignment-list" class="admin-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="reports-view" class="content-view hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <p class="eyebrow">Reports</p>
+            <h3>Operational Summary</h3>
+          </div>
+          <div id="report-cards" class="overview-cards"></div>
+        </div>
+      </section>
+
+      <section id="admin-view" class="content-view hidden">
+        <section id="admin-panel" class="panel hidden" aria-label="School admin">
+          <div class="panel-header">
+            <p class="eyebrow">Admin</p>
+            <h3>Departments & User Assignment</h3>
+            <p class="intro">Principal-only setup for departments and user assignment.</p>
+          </div>
+          <div class="detail-tabs">
+            <button class="tab-button is-active" type="button" data-admin-tab="departments">Departments</button>
+            <button class="tab-button" type="button" data-admin-tab="users">Users</button>
+          </div>
+          <div class="admin-section">
+            <div class="admin-card" data-admin-panel="departments">
+              <h3>Departments</h3>
+              <div class="admin-form-row">
+                <div class="field">
+                  <label for="department-name">Department name</label>
+                  <input id="department-name" name="departmentName" type="text" placeholder="Academic Affairs" />
+                </div>
+                <div class="field">
+                  <label for="department-code">Department code</label>
+                  <input id="department-code" name="departmentCode" type="text" placeholder="ACADEMIC" />
+                </div>
+                <div class="auth-actions">
+                  <button id="create-department-button" class="secondary-button" type="button">Add Department</button>
+                </div>
+              </div>
+              <div id="department-list" class="admin-list"></div>
+            </div>
+
+            <div class="admin-card hidden" data-admin-panel="users">
+              <h3>User Assignment</h3>
+              <div id="user-admin-list" class="admin-list"></div>
+            </div>
+          </div>
         </section>
-      </div>
+      </section>
+
+      <section id="account-view" class="content-view hidden">
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Account</p>
+              <h3>Session Access</h3>
+            </div>
+            <div id="account-summary" class="admin-item"></div>
+            <div class="account-grid">
+              <div class="field">
+                <label for="username">Username</label>
+                <input id="username" name="username" type="text" placeholder="alice" />
+              </div>
+              <div class="field">
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" placeholder="Enter password" />
+              </div>
+              <div class="auth-actions">
+                <button id="login-button" class="primary-button" type="button">Log In</button>
+                <button id="logout-button" class="secondary-button" type="button">Log Out</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Account</p>
+              <h3>Password & Dev Fallback</h3>
+            </div>
+            <div class="auth-panel-row">
+              <div class="field">
+                <label for="current-password">Current password</label>
+                <input id="current-password" name="currentPassword" type="password" placeholder="Current password" />
+              </div>
+              <div class="field">
+                <label for="new-password">New password</label>
+                <input id="new-password" name="newPassword" type="password" placeholder="New password" />
+              </div>
+              <div class="auth-actions">
+                <button id="change-password-button" class="secondary-button" type="button">Change Password</button>
+              </div>
+            </div>
+            <div class="auth-panel-row">
+              <div class="field">
+                <label for="mock-user-id">Mock user id</label>
+                <input
+                  id="mock-user-id"
+                  name="mockUserId"
+                  type="text"
+                  placeholder="user-a"
+                  value="${escapeHtml(currentMockUserId)}"
+                />
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="legacy-view" class="content-view hidden">
+        <div class="legacy-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Legacy</p>
+              <h3>Growth Tasks</h3>
+              <p class="intro">Legacy growth tooling is still available, but no longer drives the main layout.</p>
+            </div>
+            <form id="task-form" class="task-form" novalidate>
+              <div class="field">
+                <label for="template">Template</label>
+                <select id="template" name="template">
+                  <option value="">Choose a content template</option>
+                  <option value="blogSeo">Blog SEO</option>
+                  <option value="facebookPost">Facebook Post</option>
+                  <option value="salesEmail">Sales Email</option>
+                  <option value="landingPageCopy">Landing Page Copy</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="title">Task title</label>
+                <input id="title" name="title" type="text" placeholder="Write blog ideas" required />
+                <p id="title-error" class="field-error hidden" aria-live="polite"></p>
+              </div>
+              <div class="field">
+                <label for="goal">Goal</label>
+                <textarea id="goal" name="goal" rows="3" placeholder="Create content ideas for a small agency" required></textarea>
+                <p id="goal-error" class="field-error hidden" aria-live="polite"></p>
+              </div>
+              <div class="field">
+                <label for="audience">Audience</label>
+                <input id="audience" name="audience" type="text" placeholder="Small business owners" required />
+                <p id="audience-error" class="field-error hidden" aria-live="polite"></p>
+              </div>
+              <div class="field">
+                <label for="notes">Notes</label>
+                <textarea id="notes" name="notes" rows="3" placeholder="Optional extra notes"></textarea>
+              </div>
+              <button id="submit-button" class="primary-button" type="submit">Create Growth Task</button>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <p class="eyebrow">Latest Result</p>
+              <h3>Growth Output</h3>
+            </div>
+            <section id="latest-result" class="result-card hidden" aria-live="polite">
+              <p id="result-meta" class="result-meta"></p>
+              <pre id="result-text" class="result-text"></pre>
+            </section>
+            <div id="legacy-task-list" class="task-list"></div>
+          </section>
+        </div>
+      </section>
     </section>
   </main>
 `;
@@ -474,6 +723,8 @@ app.innerHTML = `
 const form = document.querySelector<HTMLFormElement>("#task-form")!;
 const statusMessage = document.querySelector<HTMLParagraphElement>("#status-message")!;
 const taskList = document.querySelector<HTMLDivElement>("#task-list")!;
+const legacyTaskList =
+  document.querySelector<HTMLDivElement>("#legacy-task-list")!;
 const refreshButton = document.querySelector<HTMLButtonElement>("#refresh-button")!;
 const submitButton = document.querySelector<HTMLButtonElement>("#submit-button")!;
 const latestResult = document.querySelector<HTMLElement>("#latest-result")!;
@@ -507,6 +758,27 @@ const createDepartmentButton =
   document.querySelector<HTMLButtonElement>("#create-department-button")!;
 const departmentList = document.querySelector<HTMLDivElement>("#department-list")!;
 const userAdminList = document.querySelector<HTMLDivElement>("#user-admin-list")!;
+const documentForm = document.querySelector<HTMLFormElement>("#document-form")!;
+const documentFileInput =
+  document.querySelector<HTMLInputElement>("#document-file")!;
+const documentTitleInput =
+  document.querySelector<HTMLInputElement>("#document-title")!;
+const documentMetadataInput =
+  document.querySelector<HTMLTextAreaElement>("#document-metadata")!;
+const createDocumentButton =
+  document.querySelector<HTMLButtonElement>("#create-document-button")!;
+const refreshDocumentsButton =
+  document.querySelector<HTMLButtonElement>("#refresh-documents-button")!;
+const documentSearchInput =
+  document.querySelector<HTMLInputElement>("#document-search")!;
+const documentList = document.querySelector<HTMLDivElement>("#document-list")!;
+const documentDetail = document.querySelector<HTMLElement>("#document-detail")!;
+const documentDetailTitle =
+  document.querySelector<HTMLHeadingElement>("#document-detail-title")!;
+const documentDetailMeta =
+  document.querySelector<HTMLParagraphElement>("#document-detail-meta")!;
+const documentDetailBody =
+  document.querySelector<HTMLDivElement>("#document-detail-body")!;
 const workItemForm = document.querySelector<HTMLFormElement>("#work-item-form")!;
 const workItemTitleInput =
   document.querySelector<HTMLInputElement>("#work-item-title")!;
@@ -518,6 +790,8 @@ const createWorkItemButton =
   document.querySelector<HTMLButtonElement>("#create-work-item-button")!;
 const refreshWorkItemsButton =
   document.querySelector<HTMLButtonElement>("#refresh-work-items-button")!;
+const workItemSearchInput =
+  document.querySelector<HTMLInputElement>("#work-item-search")!;
 const workItemList = document.querySelector<HTMLDivElement>("#work-item-list")!;
 const workItemDetail = document.querySelector<HTMLElement>("#work-item-detail")!;
 const workItemDetailTitle =
@@ -526,18 +800,64 @@ const workItemDetailMeta =
   document.querySelector<HTMLParagraphElement>("#work-item-detail-meta")!;
 const workItemDetailBody =
   document.querySelector<HTMLDivElement>("#work-item-detail-body")!;
-const principalQueue = document.querySelector<HTMLElement>("#principal-queue")!;
-const principalQueueList =
-  document.querySelector<HTMLDivElement>("#principal-queue-list")!;
+const departmentTaskQueue =
+  document.querySelector<HTMLElement>("#department-task-queue")!;
+const departmentTaskQueueList =
+  document.querySelector<HTMLDivElement>("#department-task-queue-list")!;
+const departmentTaskStatusFilter =
+  document.querySelector<HTMLSelectElement>("#department-task-status-filter")!;
 const loginButton = document.querySelector<HTMLButtonElement>("#login-button")!;
 const logoutButton = document.querySelector<HTMLButtonElement>("#logout-button")!;
 const changePasswordButton =
   document.querySelector<HTMLButtonElement>("#change-password-button")!;
+const navButtons = document.querySelectorAll<HTMLButtonElement>("[data-view]");
+const viewEyebrow = document.querySelector<HTMLParagraphElement>("#view-eyebrow")!;
+const viewTitle = document.querySelector<HTMLHeadingElement>("#view-title")!;
+const viewDescription =
+  document.querySelector<HTMLParagraphElement>("#view-description")!;
+const overviewView = document.querySelector<HTMLElement>("#overview-view")!;
+const documentsView = document.querySelector<HTMLElement>("#documents-view")!;
+const workItemsView = document.querySelector<HTMLElement>("#work-items-view")!;
+const assignmentsView = document.querySelector<HTMLElement>("#assignments-view")!;
+const departmentTasksView =
+  document.querySelector<HTMLElement>("#department-tasks-view")!;
+const reportsView = document.querySelector<HTMLElement>("#reports-view")!;
+const adminView = document.querySelector<HTMLElement>("#admin-view")!;
+const approvalsView = document.querySelector<HTMLElement>("#approvals-view")!;
+const accountView = document.querySelector<HTMLElement>("#account-view")!;
+const legacyView = document.querySelector<HTMLElement>("#legacy-view")!;
+const overviewCards = document.querySelector<HTMLDivElement>("#overview-cards")!;
+const needsAttentionPanel =
+  document.querySelector<HTMLDivElement>("#needs-attention-panel")!;
+const recentActivityPanel =
+  document.querySelector<HTMLDivElement>("#recent-activity-panel")!;
+const byDepartmentPanel =
+  document.querySelector<HTMLDivElement>("#by-department-panel")!;
+const reportCards = document.querySelector<HTMLDivElement>("#report-cards")!;
+const assignmentQueue = document.querySelector<HTMLDivElement>("#assignment-queue")!;
+const assignmentWorkspace =
+  document.querySelector<HTMLDivElement>("#assignment-workspace")!;
+const assignmentList = document.querySelector<HTMLDivElement>("#assignment-list")!;
+const approvalsQueue = document.querySelector<HTMLDivElement>("#approvals-queue")!;
+const approvalsAssignmentList =
+  document.querySelector<HTMLDivElement>("#approvals-assignment-list")!;
+const accountSummary = document.querySelector<HTMLDivElement>("#account-summary")!;
+const departmentTaskStatusTabs =
+  document.querySelector<HTMLDivElement>("#department-task-status-tabs")!;
+const departmentTaskDetail =
+  document.querySelector<HTMLElement>("#department-task-detail")!;
+const departmentTaskDetailTitle =
+  document.querySelector<HTMLHeadingElement>("#department-task-detail-title")!;
+const departmentTaskDetailMeta =
+  document.querySelector<HTMLParagraphElement>("#department-task-detail-meta")!;
+const departmentTaskDetailBody =
+  document.querySelector<HTMLDivElement>("#department-task-detail-body")!;
 
 if (
   !form ||
   !statusMessage ||
   !taskList ||
+  !legacyTaskList ||
   !refreshButton ||
   !submitButton ||
   !latestResult ||
@@ -564,28 +884,73 @@ if (
   !createDepartmentButton ||
   !departmentList ||
   !userAdminList ||
+  !documentForm ||
+  !documentFileInput ||
+  !documentTitleInput ||
+  !documentMetadataInput ||
+  !createDocumentButton ||
+  !refreshDocumentsButton ||
+  !documentSearchInput ||
+  !documentList ||
+  !documentDetail ||
+  !documentDetailTitle ||
+  !documentDetailMeta ||
+  !documentDetailBody ||
   !workItemForm ||
   !workItemTitleInput ||
   !workItemDescriptionInput ||
   !workItemDepartmentSelect ||
   !createWorkItemButton ||
   !refreshWorkItemsButton ||
+  !workItemSearchInput ||
   !workItemList ||
   !workItemDetail ||
   !workItemDetailTitle ||
   !workItemDetailMeta ||
   !workItemDetailBody ||
-  !principalQueue ||
-  !principalQueueList ||
+  !departmentTaskQueue ||
+  !departmentTaskQueueList ||
+  !departmentTaskStatusFilter ||
   !loginButton ||
   !logoutButton ||
-  !changePasswordButton
+  !changePasswordButton ||
+  navButtons.length === 0 ||
+  !viewEyebrow ||
+  !viewTitle ||
+  !viewDescription ||
+  !overviewView ||
+  !documentsView ||
+  !workItemsView ||
+  !assignmentsView ||
+  !departmentTasksView ||
+  !reportsView ||
+  !adminView ||
+  !approvalsView ||
+  !accountView ||
+  !legacyView ||
+  !overviewCards ||
+  !needsAttentionPanel ||
+  !recentActivityPanel ||
+  !byDepartmentPanel ||
+  !reportCards ||
+  !assignmentQueue ||
+  !assignmentWorkspace ||
+  !assignmentList ||
+  !approvalsQueue ||
+  !approvalsAssignmentList ||
+  !accountSummary ||
+  !departmentTaskStatusTabs ||
+  !departmentTaskDetail ||
+  !departmentTaskDetailTitle ||
+  !departmentTaskDetailMeta ||
+  !departmentTaskDetailBody
 ) {
   throw new Error("One or more required UI elements were not found");
 }
 
 renderActiveUser();
 renderSessionUser();
+renderCurrentView();
 
 titleInput.addEventListener("input", () => {
   clearTitleError();
@@ -603,6 +968,55 @@ templateSelect.addEventListener("change", () => {
   applySelectedTemplate(templateSelect.value);
 });
 
+navButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const nextView = button.dataset.view as typeof currentView | undefined;
+
+    if (!nextView) {
+      return;
+    }
+
+    if (nextView === "admin" && !isAdminLikeSession()) {
+      setStatus("Admin access is required for this view.", "error");
+      return;
+    }
+
+    currentView = nextView;
+    renderCurrentView();
+  });
+});
+
+workItemSearchInput.addEventListener("input", () => {
+  currentWorkItemSearch = workItemSearchInput.value.trim().toLowerCase();
+  renderWorkItemList(currentWorkItems);
+});
+
+documentSearchInput.addEventListener("input", () => {
+  currentDocumentSearch = documentSearchInput.value.trim().toLowerCase();
+  renderDocumentList(currentDocuments);
+});
+
+departmentTaskStatusFilter.addEventListener("change", () => {
+  currentDepartmentTaskStatusFilter = departmentTaskStatusFilter.value;
+  renderTaskList(currentTaskItems);
+});
+
+departmentTaskStatusTabs
+  .querySelectorAll<HTMLButtonElement>("[data-status-filter]")
+  .forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextFilter = button.dataset.statusFilter ?? "all";
+      currentDepartmentTaskStatusFilter = nextFilter;
+      departmentTaskStatusFilter.value = nextFilter;
+      departmentTaskStatusTabs
+        .querySelectorAll<HTMLButtonElement>("[data-status-filter]")
+        .forEach((item) => {
+          item.classList.toggle("is-active", item.dataset.statusFilter === nextFilter);
+        });
+      renderTaskList(currentTaskItems);
+    });
+  });
+
 mockUserInput.addEventListener("input", () => {
   currentMockUserId = normalizeMockUserId(mockUserInput.value);
   saveMockUserId(currentMockUserId);
@@ -615,8 +1029,10 @@ mockUserInput.addEventListener("change", async () => {
   saveMockUserId(currentMockUserId);
   renderActiveUser();
   resetUserScopedUiState();
+  await loadDocuments();
   await loadWorkItems();
   await loadTasks();
+  await loadAssignments();
 });
 
 loginButton.addEventListener("click", async () => {
@@ -660,8 +1076,10 @@ loginButton.addEventListener("click", async () => {
     passwordInput.value = "";
     resetUserScopedUiState();
     await loadAdminData();
+    await loadDocuments();
     await loadWorkItems();
     await loadTasks();
+    await loadAssignments();
     setStatus("Logged in successfully.", "success");
   } catch (error: unknown) {
     setStatus(
@@ -753,8 +1171,10 @@ logoutButton.addEventListener("click", async () => {
     newPasswordInput.value = "";
     resetUserScopedUiState();
     await loadAdminData();
+    await loadDocuments();
     await loadWorkItems();
     await loadTasks();
+    await loadAssignments();
     setStatus("Logged out successfully.", "success");
   } catch (error: unknown) {
     setStatus(
@@ -817,6 +1237,15 @@ createDepartmentButton.addEventListener("click", async () => {
   } finally {
     createDepartmentButton.disabled = false;
   }
+});
+
+refreshDocumentsButton.addEventListener("click", async () => {
+  await loadDocuments();
+});
+
+documentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await handleCreateDocument();
 });
 
 workItemForm.addEventListener("submit", async (event) => {
@@ -1004,11 +1433,19 @@ async function loadTasks(): Promise<void> {
     syncSelectedTaskDetail(taskItems);
     syncLatestResult(taskItems);
     renderTaskList(taskItems);
+    renderLegacyTaskList(taskItems);
+    renderDepartmentTaskQueue(taskItems);
+    renderOverview();
+    renderReports();
   } catch (error: unknown) {
     currentTaskItems = [];
     currentTasks = [];
     resetUserScopedUiState();
     renderTaskList([]);
+    renderLegacyTaskList([]);
+    renderDepartmentTaskQueue([]);
+    renderOverview();
+    renderReports();
     setStatus(
       error instanceof Error
         ? error.message
@@ -1018,23 +1455,138 @@ async function loadTasks(): Promise<void> {
   }
 }
 
-/**
- * Draws the task list in the page.
- */
-function renderTaskList(tasks: TaskListItem[]): void {
-  if (tasks.length === 0) {
-    taskList.innerHTML = `
+function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
+  const queueItems = taskItems.filter(
+    (item) => item.task.taskType === "school_workflow"
+  );
+
+  if (
+    !currentSessionUser ||
+    !(
+      currentSessionUser.role === "department_head" ||
+      currentSessionUser.role === "staff" ||
+      currentSessionUser.role === "clerk" ||
+      currentSessionUser.role === "principal" ||
+      currentSessionUser.role === "admin"
+    )
+  ) {
+    departmentTaskQueue.classList.add("hidden");
+    departmentTaskQueueList.innerHTML = "";
+    return;
+  }
+
+  departmentTaskQueue.classList.remove("hidden");
+
+  if (queueItems.length === 0) {
+    departmentTaskQueueList.innerHTML = `
       <div class="empty-state">
-        No tasks yet. Create your first Growth task from the form above.
+        No department assignment tasks are visible for the current user.
       </div>
     `;
     return;
   }
 
-  taskList.innerHTML = tasks
+  departmentTaskQueueList.innerHTML = queueItems
+    .map(
+      (item) => `
+        <article class="admin-item">
+          <div class="task-card-row">
+            <strong>${escapeHtml(item.task.title)}</strong>
+            <span class="status-badge status-${escapeHtml(item.task.status)}">
+              ${escapeHtml(item.task.status)}
+            </span>
+          </div>
+          <p><strong>Department:</strong> ${escapeHtml(item.task.ownerDepartmentId ?? "none")}</p>
+          <p><strong>Progress:</strong> ${escapeHtml(String(item.task.progressPercent ?? 0))}%</p>
+          <div class="auth-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              data-open-assignment-task-id="${escapeHtml(item.task.id)}"
+            >
+              Open Task
+            </button>
+            ${
+              item.task.status === "pending"
+                ? `
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    data-accept-assignment-task-id="${escapeHtml(item.task.id)}"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    class="secondary-button danger-button"
+                    type="button"
+                    data-reject-assignment-task-id="${escapeHtml(item.task.id)}"
+                  >
+                    Reject
+                  </button>
+                `
+                : ""
+            }
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  departmentTaskQueueList
+    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        selectTaskById(button.dataset.openAssignmentTaskId ?? null);
+      });
+    });
+
+  departmentTaskQueueList
+    .querySelectorAll<HTMLButtonElement>("[data-accept-assignment-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleAcceptAssignmentTask(button.dataset.acceptAssignmentTaskId ?? null);
+      });
+    });
+
+  departmentTaskQueueList
+    .querySelectorAll<HTMLButtonElement>("[data-reject-assignment-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleRejectAssignmentTask(button.dataset.rejectAssignmentTaskId ?? null);
+      });
+    });
+}
+
+/**
+ * Draws the task list in the page.
+ */
+function renderTaskList(tasks: TaskListItem[]): void {
+  const filteredTasks = tasks.filter((item) => {
+    if (item.task.taskType !== "school_workflow") {
+      return false;
+    }
+
+    if (currentDepartmentTaskStatusFilter === "all") {
+      return true;
+    }
+
+    return item.task.status === currentDepartmentTaskStatusFilter;
+  });
+
+  if (filteredTasks.length === 0) {
+    taskList.innerHTML = `
+      <div class="empty-state">
+        No department tasks match the current filter.
+      </div>
+    `;
+    hideDepartmentTaskDetail();
+    return;
+  }
+
+  taskList.innerHTML = filteredTasks
     .map(
       (task) => `
-        <article class="task-card">
+        <article class="task-card ${selectedTaskId === task.task.id ? "is-selected" : ""}">
           <div class="task-card-row">
             <h3>${escapeHtml(task.task.title)}</h3>
             <span class="status-badge status-${task.task.status}">
@@ -1063,45 +1615,118 @@ function renderTaskList(tasks: TaskListItem[]): void {
     )
     .join("");
 
-  const detailButtons = taskList.querySelectorAll<HTMLButtonElement>(
-    "[data-task-id]"
-  );
+  bindTaskListInteractions(taskList);
 
-  detailButtons.forEach((button) => {
+  const selectedTask = filteredTasks.find((item) => item.task.id === selectedTaskId) ?? null;
+
+  if (selectedTask) {
+    renderDepartmentTaskDetail(selectedTask);
+  } else {
+    hideDepartmentTaskDetail();
+  }
+}
+
+function renderLegacyTaskList(tasks: TaskListItem[]): void {
+  if (tasks.length === 0) {
+    legacyTaskList.innerHTML = `
+      <div class="empty-state">
+        No legacy growth tasks are visible for the current user.
+      </div>
+    `;
+    return;
+  }
+
+  legacyTaskList.innerHTML = tasks
+    .map(
+      (task) => `
+        <article class="task-card">
+          <div class="task-card-row">
+            <h3>${escapeHtml(task.task.title)}</h3>
+            <span class="status-badge status-${task.task.status}">
+              ${escapeHtml(task.task.status)}
+            </span>
+          </div>
+          <p><strong>Task Type:</strong> ${escapeHtml(task.task.taskType)}</p>
+          <p><strong>Owner:</strong> ${escapeHtml(getOwnerLabel(task.task.ownerId))}</p>
+          <p><strong>Created At:</strong> ${formatDate(task.task.createdAt)}</p>
+          <button
+            class="secondary-button task-detail-button"
+            type="button"
+            data-task-id="${escapeHtml(task.task.id)}"
+          >
+            ${selectedTaskId === task.task.id ? "Hide Details" : "View Details"}
+          </button>
+          ${selectedTaskId === task.task.id ? renderTaskDetail(task) : ""}
+        </article>
+      `
+    )
+    .join("");
+  bindTaskListInteractions(legacyTaskList);
+}
+
+function renderDepartmentTaskDetail(taskItem: TaskListItem): void {
+  departmentTaskDetail.classList.remove("hidden");
+  departmentTaskDetailTitle.textContent = taskItem.task.title;
+  departmentTaskDetailMeta.textContent = [
+    `Status: ${taskItem.task.status}`,
+    `Department: ${taskItem.task.ownerDepartmentId ?? "none"}`,
+    `Assignment: ${taskItem.task.assignmentId ?? "none"}`
+  ].join(" | ");
+  departmentTaskDetailBody.innerHTML = renderTaskDetail(taskItem);
+  bindTaskListInteractions(departmentTaskDetailBody);
+}
+
+function hideDepartmentTaskDetail(): void {
+  departmentTaskDetail.classList.add("hidden");
+  departmentTaskDetailTitle.textContent = "Task Detail";
+  departmentTaskDetailMeta.textContent = "";
+  departmentTaskDetailBody.innerHTML = "";
+}
+
+function bindTaskListInteractions(container: HTMLElement): void {
+  container.querySelectorAll<HTMLButtonElement>("[data-task-id]").forEach((button) => {
     button.addEventListener("click", () => {
       selectTaskById(button.dataset.taskId ?? null);
     });
   });
 
-  const copyButtons = taskList.querySelectorAll<HTMLButtonElement>(
-    "[data-copy-mode]"
-  );
-
-  copyButtons.forEach((button) => {
+  container.querySelectorAll<HTMLButtonElement>("[data-copy-mode]").forEach((button) => {
     button.addEventListener("click", async () => {
       await handleCopyAction(button);
     });
   });
 
-  const retryButtons = taskList.querySelectorAll<HTMLButtonElement>(
-    "[data-retry-task-id]"
-  );
-
-  retryButtons.forEach((button) => {
-    button.addEventListener("click", async () => {
-      await handleRetryTask(button.dataset.retryTaskId ?? null, button);
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-retry-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleRetryTask(button.dataset.retryTaskId ?? null, button);
+      });
     });
-  });
 
-  const deleteButtons = taskList.querySelectorAll<HTMLButtonElement>(
-    "[data-delete-task-id]"
-  );
-
-  deleteButtons.forEach((button) => {
-    button.addEventListener("click", async () => {
-      await handleDeleteTask(button.dataset.deleteTaskId ?? null, button);
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-delete-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleDeleteTask(button.dataset.deleteTaskId ?? null, button);
+      });
     });
-  });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-accept-assignment-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleAcceptAssignmentTask(button.dataset.acceptAssignmentTaskId ?? null);
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-reject-assignment-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleRejectAssignmentTask(button.dataset.rejectAssignmentTaskId ?? null);
+      });
+    });
 }
 
 /**
@@ -1255,6 +1880,27 @@ function renderTaskDetail(taskItem: TaskListItem): string {
         >
           Delete Task
         </button>
+        ${
+          taskItem.task.taskType === "school_workflow" &&
+          taskItem.task.status === "pending"
+            ? `
+              <button
+                class="secondary-button task-action-button"
+                type="button"
+                data-accept-assignment-task-id="${escapeHtml(taskItem.task.id)}"
+              >
+                Accept Assignment
+              </button>
+              <button
+                class="secondary-button task-action-button danger-button"
+                type="button"
+                data-reject-assignment-task-id="${escapeHtml(taskItem.task.id)}"
+              >
+                Reject Assignment
+              </button>
+            `
+            : ""
+        }
       </div>
       <div class="task-detail-grid">
         <div>
@@ -1284,6 +1930,18 @@ function renderTaskDetail(taskItem: TaskListItem): string {
         <div>
           <p class="detail-label">Owner</p>
           <p class="detail-value owner-badge">${escapeHtml(getOwnerLabel(taskItem.task.ownerId))}</p>
+        </div>
+        <div>
+          <p class="detail-label">Department</p>
+          <p class="detail-value">${escapeHtml(taskItem.task.ownerDepartmentId ?? "none")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Assignment</p>
+          <p class="detail-value">${escapeHtml(taskItem.task.assignmentId ?? "none")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Progress</p>
+          <p class="detail-value">${escapeHtml(String(taskItem.task.progressPercent ?? 0))}%</p>
         </div>
       </div>
 
@@ -1628,11 +2286,20 @@ function hideLatestResult(): void {
 
 function resetUserScopedUiState(): void {
   selectedTaskId = null;
+  selectedDocumentId = null;
   selectedWorkItemId = null;
+  currentDocuments = [];
   currentWorkItems = [];
+  currentWorkItemAssignments = [];
+  currentAssignments = [];
   hideLatestResult();
+  hideDocumentDetail();
   hideWorkItemDetail();
+  renderDocumentList([]);
   renderWorkItemList([]);
+  renderAssignmentsList([]);
+  renderOverview();
+  renderReports();
 }
 
 function buildApiHeaders(
@@ -1683,6 +2350,11 @@ function renderSessionUser(): void {
       : "Session user: not logged in";
   renderIdentitySource();
   renderAdminPanel();
+  renderAccountSummary();
+  renderSidebarVisibility();
+  renderCurrentView();
+  renderOverview();
+  renderReports();
 }
 
 function renderIdentitySource(): void {
@@ -1724,6 +2396,80 @@ function isAdminLikeSession(): boolean {
   return currentSessionUser?.role === "principal" || currentSessionUser?.role === "admin";
 }
 
+function getAllowedViews(): Array<typeof currentView> {
+  const role = currentSessionUser?.role;
+
+  if (role === "principal" || role === "admin") {
+    return [
+      "overview",
+      "documents",
+      "work-items",
+      "assignments",
+      "department-tasks",
+      "approvals",
+      "reports",
+      "admin",
+      "account",
+      "legacy"
+    ];
+  }
+
+  if (role === "department_head") {
+    return ["overview", "documents", "work-items", "department-tasks", "reports", "account"];
+  }
+
+  if (role === "clerk") {
+    return ["overview", "documents", "work-items", "account"];
+  }
+
+  if (role === "staff") {
+    return ["overview", "documents", "department-tasks", "reports", "account"];
+  }
+
+  return ["overview", "account"];
+}
+
+function renderSidebarVisibility(): void {
+  const allowedViews = new Set(getAllowedViews());
+
+  navButtons.forEach((button) => {
+    const view = button.dataset.view as typeof currentView | undefined;
+    const shouldShow = view ? allowedViews.has(view) : false;
+    button.classList.toggle("hidden", !shouldShow);
+  });
+
+  if (!allowedViews.has(currentView)) {
+    currentView = allowedViews.has("documents")
+      ? "documents"
+      : allowedViews.has("work-items")
+        ? "work-items"
+        : "overview";
+  }
+}
+
+function renderAccountSummary(): void {
+  accountSummary.innerHTML = `
+    <div class="admin-item-grid">
+      <div>
+        <p class="detail-label">Session</p>
+        <p class="detail-value">${escapeHtml(currentSessionUserId ?? "Not logged in")}</p>
+      </div>
+      <div>
+        <p class="detail-label">Role</p>
+        <p class="detail-value">${escapeHtml(currentSessionUser?.role ?? "guest")}</p>
+      </div>
+      <div>
+        <p class="detail-label">Department</p>
+        <p class="detail-value">${escapeHtml(currentSessionUser?.departmentName ?? currentSessionUser?.departmentId ?? "none")}</p>
+      </div>
+      <div>
+        <p class="detail-label">Position</p>
+        <p class="detail-value">${escapeHtml(currentSessionUser?.position ?? "not set")}</p>
+      </div>
+    </div>
+  `;
+}
+
 function canUseWorkItems(): boolean {
   return (
     currentSessionUser?.role === "principal" ||
@@ -1732,17 +2478,46 @@ function canUseWorkItems(): boolean {
   );
 }
 
+function canUseDocumentIntake(): boolean {
+  return currentSessionUserId !== null;
+}
+
 function renderAdminPanel(): void {
   if (!(currentSessionUser?.role === "principal" || currentSessionUser?.role === "admin")) {
     adminPanel.classList.add("hidden");
     departmentList.innerHTML = "";
     userAdminList.innerHTML = "";
+    if (currentView === "admin") {
+      currentView = "overview";
+      renderCurrentView();
+    }
     return;
   }
 
   adminPanel.classList.remove("hidden");
   renderDepartmentList();
   renderUserAdminList();
+  bindAdminTabs();
+}
+
+function bindAdminTabs(): void {
+  adminPanel
+    .querySelectorAll<HTMLButtonElement>("[data-admin-tab]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextTab = button.dataset.adminTab ?? "departments";
+        adminPanel
+          .querySelectorAll<HTMLButtonElement>("[data-admin-tab]")
+          .forEach((item) => {
+            item.classList.toggle("is-active", item.dataset.adminTab === nextTab);
+          });
+        adminPanel
+          .querySelectorAll<HTMLElement>("[data-admin-panel]")
+          .forEach((panel) => {
+            panel.classList.toggle("hidden", panel.dataset.adminPanel !== nextTab);
+          });
+      });
+    });
 }
 
 function renderWorkItemDepartmentOptions(): void {
@@ -1943,6 +2718,7 @@ async function loadAdminData(): Promise<void> {
     currentUsers = [];
     renderWorkItemDepartmentOptions();
     renderAdminPanel();
+    renderOverview();
     return;
   }
 
@@ -1982,11 +2758,13 @@ async function loadAdminData(): Promise<void> {
     }
 
     renderAdminPanel();
+    renderOverview();
   } catch (error: unknown) {
     currentDepartments = [];
     currentUsers = [];
     renderWorkItemDepartmentOptions();
     renderAdminPanel();
+    renderOverview();
     setStatus(
       error instanceof Error
         ? error.message
@@ -1996,12 +2774,444 @@ async function loadAdminData(): Promise<void> {
   }
 }
 
+async function loadDocuments(): Promise<void> {
+  if (!currentSessionUserId) {
+    currentDocuments = [];
+    selectedDocumentId = null;
+    renderDocumentList([]);
+    hideDocumentDetail();
+    renderOverview();
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/documents", {
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not load documents")
+      );
+    }
+
+    const data = (await response.json()) as DocumentsResponse;
+    currentDocuments = data.documents;
+    syncSelectedDocument();
+    renderDocumentList(currentDocuments);
+    renderOverview();
+  } catch (error: unknown) {
+    currentDocuments = [];
+    selectedDocumentId = null;
+    renderDocumentList([]);
+    hideDocumentDetail();
+    renderOverview();
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while loading documents.",
+      "error"
+    );
+  }
+}
+
+function renderDocumentList(items: DocumentListItem[]): void {
+  const filteredItems = items.filter((item) => {
+    if (currentDocumentSearch.length === 0) {
+      return true;
+    }
+
+    const haystack = [
+      item.document.filename,
+      item.document.uploadedByUserId,
+      item.document.extractedText ?? "",
+      JSON.stringify(item.document.metadata ?? {})
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(currentDocumentSearch);
+  });
+
+  if (filteredItems.length === 0) {
+    documentList.innerHTML = `
+      <div class="empty-state">
+        No documents match the current search.
+      </div>
+    `;
+    return;
+  }
+
+  documentList.innerHTML = filteredItems
+    .map(
+      (item) => `
+        <article class="task-card ${selectedDocumentId === item.document.id ? "is-selected" : ""}">
+          <div class="task-card-row">
+            <h3>${escapeHtml(item.document.filename)}</h3>
+            <span class="status-badge status-${escapeHtml(item.document.ocrStatus)}">
+              ${escapeHtml(item.document.ocrStatus)}
+            </span>
+          </div>
+          <p><strong>Uploaded By:</strong> ${escapeHtml(item.document.uploadedByUserId)}</p>
+          <p><strong>Work Item:</strong> ${escapeHtml(item.document.createdWorkItemId ?? "not created")}</p>
+          <p><strong>Created:</strong> ${formatDate(item.document.createdAt)}</p>
+          <button
+            class="secondary-button task-detail-button"
+            type="button"
+            data-document-id="${escapeHtml(item.document.id)}"
+          >
+            ${selectedDocumentId === item.document.id ? "Hide Details" : "Open Document"}
+          </button>
+        </article>
+      `
+    )
+    .join("");
+
+  documentList
+    .querySelectorAll<HTMLButtonElement>("[data-document-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        void selectDocumentById(button.dataset.documentId ?? null);
+      });
+    });
+}
+
+function syncSelectedDocument(): void {
+  if (!selectedDocumentId) {
+    hideDocumentDetail();
+    return;
+  }
+
+  const selected = currentDocuments.find(
+    (item) => item.document.id === selectedDocumentId
+  );
+
+  if (!selected) {
+    selectedDocumentId = null;
+    hideDocumentDetail();
+    return;
+  }
+
+  renderDocumentDetail(selected);
+}
+
+async function selectDocumentById(documentId: string | null): Promise<void> {
+  selectedDocumentId = selectedDocumentId === documentId ? null : documentId;
+
+  if (!selectedDocumentId) {
+    hideDocumentDetail();
+    renderDocumentList(currentDocuments);
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/documents/${encodeURIComponent(selectedDocumentId)}`, {
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not load the document")
+      );
+    }
+
+    const detail = (await response.json()) as DocumentDetailResponse;
+    const index = currentDocuments.findIndex(
+      (item) => item.document.id === detail.document.id
+    );
+
+    if (index >= 0) {
+      currentDocuments[index] = detail;
+    } else {
+      currentDocuments.unshift(detail);
+    }
+
+    renderDocumentList(currentDocuments);
+    renderDocumentDetail(detail);
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while loading the document.",
+      "error"
+    );
+  }
+}
+
+function renderDocumentDetail(item: DocumentListItem): void {
+  documentDetail.classList.remove("hidden");
+  documentDetailTitle.textContent = item.document.filename;
+  documentDetailMeta.textContent = [
+    `OCR: ${item.document.ocrStatus}`,
+    `Uploaded: ${formatDate(item.document.createdAt)}`,
+    `Work Item: ${item.document.createdWorkItemId ?? "not created"}`
+  ].join(" | ");
+
+  documentDetailBody.innerHTML = `
+    <div class="detail-tabs">
+      <button class="tab-button is-active" type="button" data-document-tab="summary">Summary</button>
+      <button class="tab-button" type="button" data-document-tab="metadata">Metadata</button>
+      <button class="tab-button" type="button" data-document-tab="text">Extracted Text</button>
+    </div>
+    <div class="task-actions">
+      <button id="analyze-document-button" class="secondary-button" type="button">Analyze Intake</button>
+      <button id="create-document-work-item-button" class="secondary-button" type="button">
+        Create Work Item
+      </button>
+    </div>
+    <section class="tab-panel" data-document-panel="summary">
+      <div class="task-output">
+        <p class="detail-label">Extracted Summary</p>
+        <pre class="task-output-text">${escapeHtml(
+          item.latestAnalysis?.rawOutput ??
+            item.document.extractedText?.slice(0, 2400) ??
+            "No analysis or extracted text is available yet."
+        )}</pre>
+      </div>
+    </section>
+    <section class="tab-panel hidden" data-document-panel="metadata">
+      <div class="task-detail-grid">
+        <div>
+          <p class="detail-label">Uploader</p>
+          <p class="detail-value">${escapeHtml(item.document.uploadedByUserId)}</p>
+        </div>
+        <div>
+          <p class="detail-label">Content Type</p>
+          <p class="detail-value">${escapeHtml(item.document.contentType ?? "unknown")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Size</p>
+          <p class="detail-value">${escapeHtml(
+            item.document.sizeBytes !== undefined ? `${item.document.sizeBytes} bytes` : "unknown"
+          )}</p>
+        </div>
+        <div>
+          <p class="detail-label">Linked Work Item</p>
+          <p class="detail-value">${escapeHtml(item.document.createdWorkItemId ?? "not created")}</p>
+        </div>
+      </div>
+      <div class="task-output">
+        <p class="detail-label">Metadata JSON</p>
+        <pre class="task-output-text">${escapeHtml(
+          JSON.stringify(item.document.metadata ?? {}, null, 2)
+        )}</pre>
+      </div>
+    </section>
+    <section class="tab-panel hidden" data-document-panel="text">
+      <div class="task-output">
+        <p class="detail-label">Extracted Text</p>
+        <pre class="task-output-text">${escapeHtml(
+          item.document.extractedText ?? "No extracted text was stored for this document."
+        )}</pre>
+      </div>
+    </section>
+  `;
+
+  documentDetailBody
+    .querySelectorAll<HTMLButtonElement>("[data-document-tab]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        setActiveDocumentDetailTab(button.dataset.documentTab ?? "summary");
+      });
+    });
+
+  documentDetailBody
+    .querySelector<HTMLButtonElement>("#analyze-document-button")
+    ?.addEventListener("click", async () => {
+      await handleAnalyzeDocument(item.document.id);
+    });
+
+  documentDetailBody
+    .querySelector<HTMLButtonElement>("#create-document-work-item-button")
+    ?.addEventListener("click", async () => {
+      await handleCreateWorkItemFromDocument(item.document.id);
+    });
+
+  setActiveDocumentDetailTab("summary");
+}
+
+function hideDocumentDetail(): void {
+  documentDetail.classList.add("hidden");
+  documentDetailTitle.textContent = "Document Detail";
+  documentDetailMeta.textContent = "";
+  documentDetailBody.innerHTML = "";
+}
+
+function setActiveDocumentDetailTab(tabName: string): void {
+  documentDetailBody
+    .querySelectorAll<HTMLButtonElement>("[data-document-tab]")
+    .forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.documentTab === tabName);
+    });
+
+  documentDetailBody
+    .querySelectorAll<HTMLElement>("[data-document-panel]")
+    .forEach((panel) => {
+      panel.classList.toggle("hidden", panel.dataset.documentPanel !== tabName);
+    });
+}
+
+async function handleCreateDocument(): Promise<void> {
+  if (!canUseDocumentIntake()) {
+    setStatus("You must be logged in to upload a document.", "error");
+    return;
+  }
+
+  const file = documentFileInput.files?.[0];
+
+  if (!file) {
+    setStatus("A document file is required.", "error");
+    return;
+  }
+
+  let metadata: Record<string, unknown> = {};
+
+  if (documentMetadataInput.value.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(documentMetadataInput.value) as unknown;
+
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Metadata JSON must be an object.");
+      }
+
+      metadata = parsed as Record<string, unknown>;
+    } catch (error) {
+      setStatus(
+        error instanceof Error ? error.message : "Metadata JSON is invalid.",
+        "error"
+      );
+      return;
+    }
+  }
+
+  if (documentTitleInput.value.trim().length > 0) {
+    metadata.note = documentTitleInput.value.trim();
+  }
+
+  createDocumentButton.disabled = true;
+  setStatus("Uploading document...", "loading");
+
+  try {
+    const extractedText = await file.text();
+    const response = await fetch("/api/documents", {
+      method: "POST",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        filename: file.name,
+        contentType: file.type || "text/plain",
+        sizeBytes: file.size,
+        metadata,
+        extractedText,
+        ocrStatus: extractedText.trim().length > 0 ? "ready" : "pending"
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not upload the document")
+      );
+    }
+
+    const data = (await response.json()) as DocumentResponse;
+    documentForm.reset();
+    documentMetadataInput.value = "";
+    documentTitleInput.value = "";
+    await loadDocuments();
+    await selectDocumentById(data.document.id);
+    setStatus("Document uploaded successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while uploading the document.",
+      "error"
+    );
+  } finally {
+    createDocumentButton.disabled = false;
+  }
+}
+
+async function handleAnalyzeDocument(documentId: string): Promise<void> {
+  try {
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/analyze`, {
+      method: "POST",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not analyze the document")
+      );
+    }
+
+    const _data = (await response.json()) as DocumentAnalysisResponse;
+    await loadDocuments();
+    await selectDocumentById(documentId);
+    setStatus("Document analysis completed.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while analyzing the document.",
+      "error"
+    );
+  }
+}
+
+async function handleCreateWorkItemFromDocument(documentId: string): Promise<void> {
+  try {
+    const detail = currentDocuments.find((item) => item.document.id === documentId);
+    const response = await fetch(
+      `/api/documents/${encodeURIComponent(documentId)}/create-work-item`,
+      {
+        method: "POST",
+        headers: buildApiHeaders({
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+          title: detail ? `School Workflow: ${detail.document.filename}` : undefined,
+          description:
+            detail?.latestAnalysis?.summary ??
+            detail?.document.extractedText?.slice(0, 1200) ??
+            undefined
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not create a work item from the document")
+      );
+    }
+
+    const data = (await response.json()) as CreateWorkItemFromDocumentResponse;
+    await loadDocuments();
+    await loadWorkItems();
+    currentView = "work-items";
+    renderCurrentView();
+    await selectWorkItemById(data.workItem.id);
+    setStatus("Work item created from document.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while creating the work item.",
+      "error"
+    );
+  }
+}
+
 async function loadWorkItems(): Promise<void> {
   if (!currentSessionUserId) {
     currentWorkItems = [];
     renderWorkItemList([]);
-    renderPrincipalQueue([]);
+    currentAssignments = [];
+    renderAssignmentsList([]);
     hideWorkItemDetail();
+    renderOverview();
+    renderReports();
     return;
   }
 
@@ -2020,13 +3230,17 @@ async function loadWorkItems(): Promise<void> {
     currentWorkItems = data.workItems;
     syncSelectedWorkItem();
     renderWorkItemList(currentWorkItems);
-    renderPrincipalQueue(currentWorkItems);
+    renderOverview();
+    renderReports();
   } catch (error: unknown) {
     currentWorkItems = [];
     selectedWorkItemId = null;
     renderWorkItemList([]);
-    renderPrincipalQueue([]);
+    currentAssignments = [];
+    renderAssignmentsList([]);
     hideWorkItemDetail();
+    renderOverview();
+    renderReports();
     setStatus(
       error instanceof Error
         ? error.message
@@ -2037,19 +3251,36 @@ async function loadWorkItems(): Promise<void> {
 }
 
 function renderWorkItemList(items: WorkItemListItem[]): void {
-  if (items.length === 0) {
+  const filteredItems = items.filter((item) => {
+    if (currentWorkItemSearch.length === 0) {
+      return true;
+    }
+
+    const haystack = [
+      item.workItem.title,
+      item.workItem.description,
+      item.workItem.createdByUserId,
+      item.workItem.departmentId ?? ""
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(currentWorkItemSearch);
+  });
+
+  if (filteredItems.length === 0) {
     workItemList.innerHTML = `
       <div class="empty-state">
-        No work items available for the current user.
+        No work items match the current search.
       </div>
     `;
     return;
   }
 
-  workItemList.innerHTML = items
+  workItemList.innerHTML = filteredItems
     .map(
       (item) => `
-        <article class="task-card">
+        <article class="task-card ${selectedWorkItemId === item.workItem.id ? "is-selected" : ""}">
           <div class="task-card-row">
             <h3>${escapeHtml(item.workItem.title)}</h3>
             <span class="status-badge status-${escapeHtml(item.workItem.status)}">
@@ -2080,35 +3311,160 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
     });
 }
 
-function renderPrincipalQueue(items: WorkItemListItem[]): void {
-  if (!isAdminLikeSession()) {
-    principalQueue.classList.add("hidden");
-    principalQueueList.innerHTML = "";
+async function loadAssignments(): Promise<void> {
+  if (!currentSessionUserId) {
+    currentAssignments = [];
+    renderAssignmentsList([]);
     return;
   }
 
-  const waitingItems = items.filter(
-    (item) => item.workItem.status === "waiting_review"
-  );
+  try {
+    const response = await fetch("/api/assignments", {
+      headers: buildApiHeaders()
+    });
 
-  principalQueue.classList.remove("hidden");
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not load assignments")
+      );
+    }
 
-  if (waitingItems.length === 0) {
-    principalQueueList.innerHTML = `
+    const data = (await response.json()) as AssignmentsResponse;
+    currentAssignments = data.assignments;
+    renderAssignmentsList(currentAssignments);
+    renderOverview();
+    renderReports();
+  } catch {
+    currentAssignments = [];
+    renderAssignmentsList([]);
+    renderOverview();
+    renderReports();
+  }
+}
+
+function renderAssignmentsList(assignments: Assignment[]): void {
+  if (assignments.length === 0) {
+    assignmentList.innerHTML = `
       <div class="empty-state">
-        No work items are currently waiting for review.
+        No assignments are visible for the current user.
+      </div>
+    `;
+    approvalsAssignmentList.innerHTML = assignmentList.innerHTML;
+    renderApprovalsQueue();
+    return;
+  }
+
+  renderAssignmentQueue();
+  renderAssignmentWorkspace();
+
+  assignmentList.innerHTML = assignments
+    .map(
+      (assignment) => `
+        <article class="admin-item">
+          <div class="task-card-row">
+            <strong>${escapeHtml(assignment.workItemId)}</strong>
+            <span class="status-badge status-running">${escapeHtml(assignment.priority)}</span>
+          </div>
+          <p><strong>Main Department:</strong> ${escapeHtml(assignment.mainDepartmentId)}</p>
+          <p><strong>Task:</strong> ${escapeHtml(assignment.taskId)}</p>
+          <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "none")}</p>
+          <p><strong>Output:</strong> ${escapeHtml(assignment.outputRequirement ?? "none")}</p>
+          <p><strong>Created:</strong> ${formatDate(assignment.createdAt)}</p>
+          <div class="auth-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              data-open-assignment-work-item-id="${escapeHtml(assignment.workItemId)}"
+            >
+              Open Work Item
+            </button>
+            <button
+              class="secondary-button"
+              type="button"
+              data-open-assignment-task-id="${escapeHtml(assignment.taskId)}"
+            >
+              Open Task
+            </button>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  assignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-work-item-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        currentView = "work-items";
+        renderCurrentView();
+        await selectWorkItemById(button.dataset.openAssignmentWorkItemId ?? null);
+      });
+    });
+
+  assignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        currentView = "department-tasks";
+        renderCurrentView();
+        selectTaskById(button.dataset.openAssignmentTaskId ?? null);
+      });
+    });
+
+  approvalsAssignmentList.innerHTML = assignmentList.innerHTML;
+  approvalsAssignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-work-item-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        currentView = "work-items";
+        renderCurrentView();
+        await selectWorkItemById(button.dataset.openAssignmentWorkItemId ?? null);
+      });
+    });
+
+  approvalsAssignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        currentView = "department-tasks";
+        renderCurrentView();
+        selectTaskById(button.dataset.openAssignmentTaskId ?? null);
+      });
+    });
+
+  renderApprovalsQueue();
+}
+
+function renderAssignmentQueue(): void {
+  if (!isAdminLikeSession()) {
+    assignmentQueue.innerHTML = `
+      <div class="empty-state">
+        Assignment tools are limited to principal or admin sessions.
       </div>
     `;
     return;
   }
 
-  principalQueueList.innerHTML = waitingItems
+  const waitingItems = currentWorkItems.filter(
+    (item) => item.workItem.status === "waiting_review"
+  );
+
+  if (waitingItems.length === 0) {
+    assignmentQueue.innerHTML = `
+      <div class="empty-state">
+        No work items are waiting for assignment.
+      </div>
+    `;
+    return;
+  }
+
+  assignmentQueue.innerHTML = waitingItems
     .map(
       (item) => `
         <button
           class="queue-item-button"
           type="button"
-          data-queue-work-item-id="${escapeHtml(item.workItem.id)}"
+          data-assignment-queue-work-item-id="${escapeHtml(item.workItem.id)}"
         >
           <strong>${escapeHtml(item.workItem.title)}</strong>
           <span>${escapeHtml(item.workItem.createdByUserId)}</span>
@@ -2117,13 +3473,316 @@ function renderPrincipalQueue(items: WorkItemListItem[]): void {
     )
     .join("");
 
-  principalQueueList
-    .querySelectorAll<HTMLButtonElement>("[data-queue-work-item-id]")
+  assignmentQueue
+    .querySelectorAll<HTMLButtonElement>("[data-assignment-queue-work-item-id]")
     .forEach((button) => {
-      button.addEventListener("click", () => {
-        selectWorkItemById(button.dataset.queueWorkItemId ?? null);
+      button.addEventListener("click", async () => {
+        await selectWorkItemById(button.dataset.assignmentQueueWorkItemId ?? null);
+        renderAssignmentWorkspace();
       });
     });
+}
+
+function renderAssignmentWorkspace(): void {
+  if (!isAdminLikeSession()) {
+    assignmentWorkspace.innerHTML = `
+      <div class="empty-state">
+        Assignment workspace is only available to principal or admin sessions.
+      </div>
+    `;
+    return;
+  }
+
+  if (!selectedWorkItemId) {
+    assignmentWorkspace.innerHTML = `
+      <div class="empty-state">
+        Select a work item from the waiting queue to review assignment details and prepare handoff.
+      </div>
+    `;
+    return;
+  }
+
+  const selectedItem = currentWorkItems.find(
+    (item) => item.workItem.id === selectedWorkItemId
+  );
+  const currentAssignment = currentWorkItemAssignments[0] ?? null;
+
+  if (!selectedItem) {
+    assignmentWorkspace.innerHTML = `
+      <div class="empty-state">
+        The selected work item is no longer visible.
+      </div>
+    `;
+    return;
+  }
+
+  assignmentWorkspace.innerHTML = `
+    <article class="admin-item">
+      <div class="task-card-row">
+        <strong>${escapeHtml(selectedItem.workItem.title)}</strong>
+        <span class="status-badge status-${escapeHtml(selectedItem.workItem.status)}">
+          ${escapeHtml(selectedItem.workItem.status)}
+        </span>
+      </div>
+      <p><strong>Description:</strong> ${escapeHtml(selectedItem.workItem.description)}</p>
+      <p><strong>Current assignment:</strong> ${escapeHtml(currentAssignment ? currentAssignment.mainDepartmentId : "none")}</p>
+      <p><strong>Priority:</strong> ${escapeHtml(currentAssignment?.priority ?? "not assigned")}</p>
+      <p><strong>Deadline:</strong> ${escapeHtml(currentAssignment?.deadline ?? "none")}</p>
+      <p><strong>Assignment form:</strong> Use the Work Items detail panel to submit or revise the assignment for this record.</p>
+      <div class="auth-actions">
+        <button class="secondary-button" type="button" data-open-assignment-workspace-item="${escapeHtml(selectedItem.workItem.id)}">
+          Open in Work Items
+        </button>
+      </div>
+    </article>
+  `;
+
+  assignmentWorkspace
+    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-workspace-item]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        currentView = "work-items";
+        renderCurrentView();
+        await selectWorkItemById(button.dataset.openAssignmentWorkspaceItem ?? null);
+      });
+    });
+}
+
+function renderApprovalsQueue(): void {
+  if (!isAdminLikeSession()) {
+    approvalsQueue.innerHTML = `
+      <div class="empty-state">
+        Approval tools are only available to principal or admin sessions.
+      </div>
+    `;
+    approvalsAssignmentList.innerHTML = `
+      <div class="empty-state">
+        Assignment oversight is limited to principal or admin sessions.
+      </div>
+    `;
+    return;
+  }
+
+  const waitingItems = currentWorkItems.filter(
+    (item) => item.workItem.status === "waiting_review"
+  );
+
+  approvalsQueue.innerHTML = `
+    <article class="admin-item">
+      <p class="detail-label">Phase Direction</p>
+      <p class="detail-value">
+        The approval gate is reserved for a later phase. Right now this view acts as an operator-safe staging area so principal or admin users know which records are waiting for formal approval logic.
+      </p>
+      <p><strong>Waiting items:</strong> ${escapeHtml(String(waitingItems.length))}</p>
+      <p><strong>What works now:</strong> review queue visibility, assignment oversight, and quick jump into Work Items.</p>
+    </article>
+  `;
+
+  approvalsAssignmentList.innerHTML = `
+    <article class="admin-item">
+      <p class="detail-label">Current Scope</p>
+      <p class="detail-value">
+        This module is intentionally a placeholder with structure, not a broken empty screen. Formal approve/reject transitions can land in a later phase without confusing operators today.
+      </p>
+      <div class="auth-actions">
+        <button class="secondary-button" type="button" data-view="assignments">Go To Assignments</button>
+      </div>
+    </article>
+  `;
+
+  approvalsAssignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-view]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        currentView = "assignments";
+        renderCurrentView();
+      });
+    });
+}
+
+function renderOverview(): void {
+  const now = Date.now();
+  const documentCount = currentDocuments.length;
+  const queueCount = currentTaskItems.filter(
+    (item) => item.task.taskType === "school_workflow"
+  ).length;
+  const waitingCount = currentWorkItems.filter(
+    (item) => item.workItem.status === "waiting_review"
+  ).length;
+  const newCount = currentWorkItems.filter((item) => item.workItem.status === "draft").length;
+  const assignedCount = currentWorkItems.filter(
+    (item) => item.workItem.status === "assigned"
+  ).length;
+  const inProgressCount = currentTaskItems.filter(
+    (item) => item.task.status === "running"
+  ).length;
+  const waitingApprovalCount = currentWorkItems.filter(
+    (item) => item.workItem.status === "waiting_review"
+  ).length;
+  const overdueCount = currentAssignments.filter((assignment) => {
+    if (!assignment.deadline) {
+      return false;
+    }
+
+    return new Date(assignment.deadline).getTime() < now;
+  }).length;
+
+  overviewCards.innerHTML = [
+    { label: "New", value: String(newCount) },
+    { label: "Waiting Review", value: String(waitingCount) },
+    { label: "Assigned", value: String(assignedCount) },
+    { label: "In Progress", value: String(inProgressCount) },
+    { label: "Overdue", value: String(overdueCount) },
+    { label: "Waiting Approval", value: String(waitingApprovalCount) }
+  ]
+    .map(
+      (card) => `
+        <article class="metric-card">
+          <p class="detail-label">${escapeHtml(card.label)}</p>
+          <strong class="metric-value">${escapeHtml(card.value)}</strong>
+        </article>
+      `
+    )
+    .join("");
+
+  const needsAttentionItems = [
+    documentCount > 0 ? `${documentCount} intake documents are currently visible.` : null,
+    overdueCount > 0 ? `${overdueCount} assignments are overdue.` : null,
+    waitingCount > 0 ? `${waitingCount} work items are still waiting review.` : null,
+    queueCount > 0 ? `${queueCount} department tasks are visible in the queue.` : null
+  ].filter(Boolean) as string[];
+
+  needsAttentionPanel.innerHTML =
+    needsAttentionItems.length > 0
+      ? needsAttentionItems
+          .map(
+            (item) => `
+              <article class="admin-item">
+                <p class="detail-value">${escapeHtml(item)}</p>
+              </article>
+            `
+          )
+          .join("")
+      : `
+          <div class="empty-state">
+            No urgent issues are detected from the current visible data.
+          </div>
+        `;
+
+  const recentActivity = [
+    ...currentDocuments.slice(0, 2).map(
+      (item) => `Document uploaded: ${item.document.filename}`
+    ),
+    ...currentWorkItems.slice(0, 3).map(
+      (item) => `Work item updated: ${item.workItem.title}`
+    ),
+    ...currentAssignments.slice(0, 2).map(
+      (assignment) => `Assignment created for ${assignment.workItemId}`
+    ),
+    ...currentTaskItems
+      .filter((item) => item.task.taskType === "school_workflow")
+      .slice(0, 2)
+      .map((item) => `Task ${item.task.status}: ${item.task.title}`)
+  ].slice(0, 5);
+
+  recentActivityPanel.innerHTML =
+    recentActivity.length > 0
+      ? recentActivity
+          .map(
+            (item) => `
+              <article class="admin-item">
+                <p class="detail-value">${escapeHtml(item)}</p>
+              </article>
+            `
+          )
+          .join("")
+      : `
+          <div class="empty-state">
+            Recent activity will appear here as work items, assignments, and department tasks move.
+          </div>
+        `;
+
+  const departmentSummary = currentDepartments.map((department) => {
+    const documentCountForDepartment = currentDocuments.filter((item) => {
+      const sourceDepartment =
+        typeof item.document.metadata?.departmentId === "string"
+          ? item.document.metadata.departmentId
+          : null;
+      return sourceDepartment === department.id;
+    }).length;
+    const workItemCount = currentWorkItems.filter(
+      (item) => item.workItem.departmentId === department.id
+    ).length;
+    const assignmentCount = currentAssignments.filter(
+      (assignment) => assignment.mainDepartmentId === department.id
+    ).length;
+
+    return {
+      name: department.name,
+      documentCount: documentCountForDepartment,
+      workItemCount,
+      assignmentCount
+    };
+  });
+
+  byDepartmentPanel.innerHTML =
+    departmentSummary.length > 0
+      ? departmentSummary
+          .map(
+            (item) => `
+              <article class="admin-item">
+                <div class="task-card-row">
+                  <strong>${escapeHtml(item.name)}</strong>
+                  <span>${escapeHtml(String(item.assignmentCount))} assignments</span>
+                </div>
+                <p><strong>Documents:</strong> ${escapeHtml(String(item.documentCount))}</p>
+                <p><strong>Work items:</strong> ${escapeHtml(String(item.workItemCount))}</p>
+              </article>
+            `
+          )
+          .join("")
+      : `
+          <div class="empty-state">
+            Department summary will appear once departments are configured.
+          </div>
+        `;
+}
+
+function renderReports(): void {
+  const completedTasks = currentTaskItems.filter(
+    (item) => item.task.status === "completed"
+  ).length;
+  const failedTasks = currentTaskItems.filter(
+    (item) => item.task.status === "failed"
+  ).length;
+  const assignedWorkItems = currentWorkItems.filter(
+    (item) => item.workItem.status === "assigned"
+  ).length;
+
+  reportCards.innerHTML = [
+    { label: "Completed Tasks", value: String(completedTasks) },
+    { label: "Failed Tasks", value: String(failedTasks) },
+    { label: "Assigned Work Items", value: String(assignedWorkItems) },
+    { label: "Active Session", value: currentSessionUserId ? "Yes" : "No" }
+  ]
+    .map(
+      (card) => `
+        <article class="metric-card">
+          <p class="detail-label">${escapeHtml(card.label)}</p>
+          <strong class="metric-value">${escapeHtml(card.value)}</strong>
+        </article>
+      `
+    )
+    .join("");
+
+  reportCards.innerHTML += `
+    <article class="admin-item">
+      <p class="detail-label">Reporting Direction</p>
+      <p class="detail-value">
+        This reporting module is a live scaffold, not an error state. It already surfaces operational counts from the current API and is ready for richer analytics once aggregated reporting endpoints arrive.
+      </p>
+    </article>
+  `;
 }
 
 function syncSelectedWorkItem(): void {
@@ -2166,6 +3825,7 @@ async function selectWorkItemById(workItemId: string | null): Promise<void> {
     }
 
     const detail = (await response.json()) as WorkItemDetailResponse;
+    currentWorkItemAssignments = await loadAssignmentsForWorkItem(detail.workItem.id);
     const index = currentWorkItems.findIndex(
       (item) => item.workItem.id === detail.workItem.id
     );
@@ -2177,7 +3837,7 @@ async function selectWorkItemById(workItemId: string | null): Promise<void> {
     }
 
     renderWorkItemList(currentWorkItems);
-    renderPrincipalQueue(currentWorkItems);
+    renderAssignmentWorkspace();
     renderWorkItemDetail(detail);
   } catch (error: unknown) {
     setStatus(
@@ -2190,6 +3850,7 @@ async function selectWorkItemById(workItemId: string | null): Promise<void> {
 }
 
 function renderWorkItemDetail(item: WorkItemListItem): void {
+  const currentAssignment = currentWorkItemAssignments[0] ?? null;
   workItemDetail.classList.remove("hidden");
   workItemDetailTitle.textContent = item.workItem.title;
   workItemDetailMeta.textContent = [
@@ -2199,23 +3860,12 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
   ].join(" | ");
 
   workItemDetailBody.innerHTML = `
-    <div class="task-detail-grid">
-      <div>
-        <p class="detail-label">Description</p>
-        <p class="detail-value">${escapeHtml(item.workItem.description)}</p>
-      </div>
-      <div>
-        <p class="detail-label">Department</p>
-        <p class="detail-value">${escapeHtml(item.workItem.departmentId ?? "none")}</p>
-      </div>
-      <div>
-        <p class="detail-label">Created By</p>
-        <p class="detail-value">${escapeHtml(item.workItem.createdByUserId)}</p>
-      </div>
-      <div>
-        <p class="detail-label">Assigned To</p>
-        <p class="detail-value">${escapeHtml(item.workItem.assignedToUserId ?? "unassigned")}</p>
-      </div>
+    <div class="detail-tabs">
+      <button class="tab-button is-active" type="button" data-detail-tab="info">Info</button>
+      <button class="tab-button" type="button" data-detail-tab="files">Files</button>
+      <button class="tab-button" type="button" data-detail-tab="analysis">AI Analysis</button>
+      <button class="tab-button" type="button" data-detail-tab="assignment">Assignment</button>
+      <button class="tab-button" type="button" data-detail-tab="history">History</button>
     </div>
     <div class="task-actions">
       <label class="field work-item-status-field">
@@ -2243,30 +3893,150 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         AI Analyze
       </button>
     </div>
-    <div class="task-output">
-      <p class="detail-label">Files</p>
-      <div class="work-item-files">
-        ${
-          item.files.length > 0
-            ? item.files
-                .map(
-                  (file) => `
-                    <div class="work-item-file-chip">
-                      ${escapeHtml(file.filename)}
-                    </div>
-                  `
-                )
-                .join("")
-            : '<p class="detail-value">No files uploaded yet.</p>'
-        }
+    <section class="tab-panel" data-detail-panel="info">
+      <div class="task-detail-grid">
+        <div>
+          <p class="detail-label">Description</p>
+          <p class="detail-value">${escapeHtml(item.workItem.description)}</p>
+        </div>
+        <div>
+          <p class="detail-label">Department</p>
+          <p class="detail-value">${escapeHtml(item.workItem.departmentId ?? "none")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Created By</p>
+          <p class="detail-value">${escapeHtml(item.workItem.createdByUserId)}</p>
+        </div>
+        <div>
+          <p class="detail-label">Assigned To</p>
+          <p class="detail-value">${escapeHtml(item.workItem.assignedToUserId ?? "unassigned")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Assignment Status</p>
+          <p class="detail-value">${escapeHtml(
+            currentAssignment ? `Assigned (${currentAssignment.priority})` : "Not assigned yet"
+          )}</p>
+        </div>
       </div>
-    </div>
-    <div class="task-output">
-      <p class="detail-label">Latest AI Analysis</p>
-      <pre class="task-output-text">${escapeHtml(
-        item.latestAnalysis?.rawOutput ?? "No analysis saved yet."
-      )}</pre>
-    </div>
+    </section>
+    <section class="tab-panel hidden" data-detail-panel="assignment">
+      <div class="task-output">
+        <p class="detail-label">Current Assignment</p>
+        <div class="detail-value">
+          ${
+            currentAssignment
+              ? [
+                  `Main Department: ${escapeHtml(currentAssignment.mainDepartmentId)}`,
+                  `Deadline: ${escapeHtml(currentAssignment.deadline ?? "none")}`,
+                  `Priority: ${escapeHtml(currentAssignment.priority)}`,
+                  `Output: ${escapeHtml(currentAssignment.outputRequirement ?? "none")}`,
+                  `Note: ${escapeHtml(currentAssignment.note ?? "none")}`,
+                  `Task ID: ${escapeHtml(currentAssignment.taskId)}`
+                ]
+                  .map((line) => `<p>${line}</p>`)
+                  .join("")
+              : "<p>No assignment exists for this work item yet.</p>"
+          }
+        </div>
+      </div>
+    </section>
+    <section class="tab-panel hidden" data-detail-panel="files">
+      <div class="task-output">
+        <p class="detail-label">Files</p>
+        <div class="work-item-files">
+          ${
+            item.files.length > 0
+              ? item.files
+                  .map(
+                    (file) => `
+                      <div class="work-item-file-chip">
+                        ${escapeHtml(file.filename)}
+                      </div>
+                    `
+                  )
+                  .join("")
+              : '<p class="detail-value">No files uploaded yet.</p>'
+          }
+        </div>
+      </div>
+    </section>
+    <section class="tab-panel hidden" data-detail-panel="analysis">
+      <div class="task-output">
+        <p class="detail-label">Latest AI Analysis</p>
+        <pre class="task-output-text">${escapeHtml(
+          item.latestAnalysis?.rawOutput ?? "No analysis saved yet."
+        )}</pre>
+      </div>
+    </section>
+    <section class="tab-panel hidden" data-detail-panel="history">
+      <div class="task-output">
+        <p class="detail-label">History</p>
+        <div class="detail-value">
+          <p>Created: ${escapeHtml(formatDate(item.workItem.createdAt))}</p>
+          <p>Updated: ${escapeHtml(formatDate(item.workItem.updatedAt))}</p>
+          <p>Status: ${escapeHtml(item.workItem.status)}</p>
+          <p>Files: ${escapeHtml(String(item.files.length))}</p>
+          <p>Analyses: ${escapeHtml(item.latestAnalysis ? "1 latest result" : "0")}</p>
+        </div>
+      </div>
+    </section>
+    ${
+      currentSessionUser?.role === "principal"
+        ? `
+          <div class="task-output assignment-form-card">
+            <p class="detail-label">Principal Assignment Flow</p>
+            <div class="admin-item-grid">
+              <div class="field">
+                <label for="assignment-main-department">Main department</label>
+                <select id="assignment-main-department">
+                  <option value="">Choose department</option>
+                  ${currentDepartments
+                    .map(
+                      (department) => `
+                        <option value="${escapeHtml(department.id)}">
+                          ${escapeHtml(department.name)}
+                        </option>
+                      `
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="field">
+                <label for="assignment-coordinating-departments">Coordinating departments</label>
+                <input
+                  id="assignment-coordinating-departments"
+                  type="text"
+                  placeholder="dept_admin, dept_academic"
+                />
+              </div>
+              <div class="field">
+                <label for="assignment-deadline">Deadline</label>
+                <input id="assignment-deadline" type="datetime-local" />
+              </div>
+              <div class="field">
+                <label for="assignment-priority">Priority</label>
+                <select id="assignment-priority">
+                  ${renderAssignmentPriorityOptions("normal")}
+                </select>
+              </div>
+              <div class="field">
+                <label for="assignment-output-requirement">Output requirement</label>
+                <textarea id="assignment-output-requirement" rows="2" placeholder="Expected report or deliverable"></textarea>
+              </div>
+              <div class="field">
+                <label for="assignment-note">Note</label>
+                <textarea id="assignment-note" rows="2" placeholder="Assignment note"></textarea>
+              </div>
+              <div class="auth-actions">
+                <button id="assign-work-item-button" class="secondary-button" type="button">
+                  Assign Work Item
+                </button>
+              </div>
+            </div>
+          </div>
+        `
+        : ""
+    }
   `;
 
   const saveButton =
@@ -2275,6 +4045,8 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     workItemDetailBody.querySelector<HTMLButtonElement>("#analyze-work-item-button");
   const fileInput =
     workItemDetailBody.querySelector<HTMLInputElement>("#work-item-file-input");
+  const assignButton =
+    workItemDetailBody.querySelector<HTMLButtonElement>("#assign-work-item-button");
 
   saveButton?.addEventListener("click", async () => {
     await handleSaveWorkItem(item.workItem.id);
@@ -2287,19 +4059,49 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
   fileInput?.addEventListener("change", async () => {
     await handleUploadWorkItemFile(item.workItem.id, fileInput);
   });
+
+  assignButton?.addEventListener("click", async () => {
+    await handleAssignWorkItem(item.workItem.id);
+  });
+
+  workItemDetailBody
+    .querySelectorAll<HTMLButtonElement>("[data-detail-tab]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        setActiveWorkItemDetailTab(button.dataset.detailTab ?? "info");
+      });
+    });
+
+  setActiveWorkItemDetailTab("info");
 }
 
 function hideWorkItemDetail(): void {
+  currentWorkItemAssignments = [];
   workItemDetail.classList.add("hidden");
   workItemDetailTitle.textContent = "Work Item Detail";
   workItemDetailMeta.textContent = "";
   workItemDetailBody.innerHTML = "";
 }
 
+function setActiveWorkItemDetailTab(tabName: string): void {
+  workItemDetailBody
+    .querySelectorAll<HTMLButtonElement>("[data-detail-tab]")
+    .forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.detailTab === tabName);
+    });
+
+  workItemDetailBody
+    .querySelectorAll<HTMLElement>("[data-detail-panel]")
+    .forEach((panel) => {
+      panel.classList.toggle("hidden", panel.dataset.detailPanel !== tabName);
+    });
+}
+
 function renderWorkItemStatusOptions(selectedStatus: WorkItemStatus): string {
   const statuses: WorkItemStatus[] = [
     "draft",
     "waiting_review",
+    "assigned",
     "in_review",
     "completed"
   ];
@@ -2313,6 +4115,44 @@ function renderWorkItemStatusOptions(selectedStatus: WorkItemStatus): string {
       `
     )
     .join("");
+}
+
+function renderAssignmentPriorityOptions(
+  selectedPriority: AssignmentPriority
+): string {
+  const priorities: AssignmentPriority[] = ["low", "normal", "high", "urgent"];
+
+  return priorities
+    .map(
+      (priority) => `
+        <option value="${escapeHtml(priority)}" ${priority === selectedPriority ? "selected" : ""}>
+          ${escapeHtml(priority)}
+        </option>
+      `
+    )
+    .join("");
+}
+
+async function loadAssignmentsForWorkItem(workItemId: string): Promise<Assignment[]> {
+  try {
+    const response = await fetch(
+      `/api/assignments?work_item_id=${encodeURIComponent(workItemId)}`,
+      {
+        headers: buildApiHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not load assignments")
+      );
+    }
+
+    const data = (await response.json()) as AssignmentsResponse;
+    return data.assignments;
+  } catch {
+    return [];
+  }
 }
 
 async function handleSaveWorkItem(workItemId: string): Promise<void> {
@@ -2348,6 +4188,80 @@ async function handleSaveWorkItem(workItemId: string): Promise<void> {
       error instanceof Error
         ? error.message
         : "Something went wrong while updating the work item.",
+      "error"
+    );
+  }
+}
+
+async function handleAssignWorkItem(workItemId: string): Promise<void> {
+  const mainDepartmentInput =
+    workItemDetailBody.querySelector<HTMLSelectElement>("#assignment-main-department");
+  const coordinatingDepartmentsInput =
+    workItemDetailBody.querySelector<HTMLInputElement>(
+      "#assignment-coordinating-departments"
+    );
+  const deadlineInput =
+    workItemDetailBody.querySelector<HTMLInputElement>("#assignment-deadline");
+  const priorityInput =
+    workItemDetailBody.querySelector<HTMLSelectElement>("#assignment-priority");
+  const outputRequirementInput =
+    workItemDetailBody.querySelector<HTMLTextAreaElement>(
+      "#assignment-output-requirement"
+    );
+  const noteInput =
+    workItemDetailBody.querySelector<HTMLTextAreaElement>("#assignment-note");
+
+  if (
+    !mainDepartmentInput ||
+    !coordinatingDepartmentsInput ||
+    !deadlineInput ||
+    !priorityInput ||
+    !outputRequirementInput ||
+    !noteInput
+  ) {
+    return;
+  }
+
+  if (mainDepartmentInput.value.length === 0) {
+    setStatus("Main department is required for assignment.", "error");
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/assign`, {
+      method: "POST",
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        mainDepartmentId: mainDepartmentInput.value,
+        coordinatingDepartmentIds: coordinatingDepartmentsInput.value
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+        deadline: deadlineInput.value || undefined,
+        priority: priorityInput.value,
+        outputRequirement: outputRequirementInput.value.trim() || undefined,
+        note: noteInput.value.trim() || undefined
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not assign the work item")
+      );
+    }
+
+    await loadTasks();
+    await loadAssignments();
+    await loadWorkItems();
+    await selectWorkItemById(workItemId);
+    setStatus("Work item assigned successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while assigning the work item.",
       "error"
     );
   }
@@ -2419,6 +4333,64 @@ async function handleAnalyzeWorkItem(workItemId: string): Promise<void> {
       error instanceof Error
         ? error.message
         : "Something went wrong while analyzing the work item.",
+      "error"
+    );
+  }
+}
+
+async function handleAcceptAssignmentTask(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/accept`, {
+      method: "POST",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not accept the assignment")
+      );
+    }
+
+    await loadTasks();
+    setStatus("Assignment accepted.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while accepting the assignment.",
+      "error"
+    );
+  }
+}
+
+async function handleRejectAssignmentTask(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/reject-assignment`, {
+      method: "POST",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not reject the assignment")
+      );
+    }
+
+    await loadTasks();
+    setStatus("Assignment rejected.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while rejecting the assignment.",
       "error"
     );
   }
@@ -2572,9 +4544,99 @@ async function loadSession(): Promise<void> {
   }
 }
 
+function renderCurrentView(): void {
+  const viewMap: Record<typeof currentView, HTMLElement> = {
+    overview: overviewView,
+    documents: documentsView,
+    "work-items": workItemsView,
+    assignments: assignmentsView,
+    "department-tasks": departmentTasksView,
+    approvals: approvalsView,
+    reports: reportsView,
+    admin: adminView,
+    account: accountView,
+    legacy: legacyView
+  };
+
+  Object.entries(viewMap).forEach(([view, element]) => {
+    element.classList.toggle("hidden", view !== currentView);
+  });
+
+  navButtons.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.view === currentView);
+  });
+
+  const titles: Record<typeof currentView, { eyebrow: string; title: string; description: string }> = {
+    overview: {
+      eyebrow: "Overview",
+      title: "Document Intake Overview",
+      description: "Track incoming documents, review pressure, assignment load, and department execution."
+    },
+    documents: {
+      eyebrow: "Documents",
+      title: "Document Intake",
+      description: "Uploaded school documents are the primary intake object before they become tracked work items."
+    },
+    "work-items": {
+      eyebrow: "Work Items",
+      title: "Operational Work Items",
+      description: "Work items are now the main domain view, with detail and assignment actions side by side."
+    },
+    assignments: {
+      eyebrow: "Assignments",
+      title: "Assignment Tracking",
+      description: "Review assignment records and jump into linked work items or department tasks."
+    },
+    "department-tasks": {
+      eyebrow: "Department Tasks",
+      title: "Execution Queue",
+      description: "Review the current department task queue and accept or reject assignments quickly."
+    },
+    approvals: {
+      eyebrow: "Approvals",
+      title: "Principal Assignment Queue",
+      description: "Review work items waiting assignment and inspect the current assignment portfolio."
+    },
+    reports: {
+      eyebrow: "Reports",
+      title: "Operational Summary",
+      description: "Use a lightweight reporting view to monitor completion, backlog, and assignment flow."
+    },
+    admin: {
+      eyebrow: "Admin",
+      title: "School Administration",
+      description: "School admin tools are isolated in their own view instead of the main dashboard."
+    },
+    account: {
+      eyebrow: "Account",
+      title: "Session & Password Controls",
+      description: "Manage login, password change, and dev fallback controls in a dedicated account area."
+    },
+    legacy: {
+      eyebrow: "Legacy",
+      title: "Legacy Growth Tools",
+      description: "Legacy growth-task workflows remain available without taking over the main school workflow layout."
+    }
+  };
+
+  const meta = titles[currentView];
+  viewEyebrow.textContent = meta.eyebrow;
+  viewTitle.textContent = meta.title;
+  viewDescription.textContent = meta.description;
+
+  if (currentView === "account") {
+    viewDescription.textContent =
+      currentSessionUser?.role && currentSessionUser?.departmentName
+        ? `${meta.description} Current role: ${currentSessionUser.role}. Department: ${currentSessionUser.departmentName}.`
+        : meta.description;
+  }
+}
+
 void (async () => {
   await loadSession();
   await loadAdminData();
+  await loadDocuments();
   await loadWorkItems();
   await loadTasks();
+  await loadAssignments();
 })();

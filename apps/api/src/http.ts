@@ -3,7 +3,10 @@ import type {
   AppUserProfile,
   AppUserRole,
   AiAnalysis,
+  AssignmentPriority,
   Department,
+  Document,
+  DocumentAnalysis,
   Task,
   TaskResult,
   WorkItem,
@@ -44,9 +47,20 @@ import {
   getTaskItemById,
   listTaskItems,
   saveTaskResult,
+  updateTaskWithAssignmentLink,
   updateTaskStatus,
   type CreateTaskInput
 } from "./store.js";
+import {
+  acceptAssignedTask,
+  rejectAssignedTask
+} from "./store.js";
+import {
+  createAssignment,
+  createAssignmentNotification,
+  getAssignmentById,
+  listAssignments
+} from "./assignments.js";
 import {
   addWorkItemFile,
   analyzeWorkItem,
@@ -54,12 +68,22 @@ import {
   createWorkItem,
   getWorkItemById,
   listWorkItems,
+  markWorkItemAssigned,
   updateWorkItem,
   type CreateWorkItemFileInput,
   type CreateWorkItemInput,
   type UpdateWorkItemInput,
   type WorkItemListItem
 } from "./work-items.js";
+import {
+  analyzeDocument,
+  canCreateDocuments,
+  createDocument,
+  createWorkItemFromDocument,
+  getDocumentById,
+  listDocuments,
+  type CreateDocumentInput
+} from "./documents.js";
 import {
   changeUserPassword,
   findUserById,
@@ -85,6 +109,8 @@ export async function handleRequest(
 ): Promise<void> {
   const method = req.method ?? "GET";
   const url = req.url ?? "/";
+  const parsedUrl = new URL(url, "http://127.0.0.1");
+  const pathname = parsedUrl.pathname;
   const startedAtMs = Date.now();
   const taskId = getTaskIdFromUrl(url);
   const departmentId = getDepartmentIdFromUrl(url);
@@ -92,6 +118,14 @@ export async function handleRequest(
   const workItemId = getWorkItemIdFromUrl(url);
   const workItemFileTargetId = getWorkItemFileTargetIdFromUrl(url);
   const workItemAnalyzeTargetId = getWorkItemAnalyzeTargetIdFromUrl(url);
+  const workItemAssignTargetId = getWorkItemAssignTargetIdFromUrl(url);
+  const documentId = getDocumentIdFromUrl(url);
+  const documentAnalyzeTargetId = getDocumentAnalyzeTargetIdFromUrl(url);
+  const documentCreateWorkItemTargetId =
+    getDocumentCreateWorkItemTargetIdFromUrl(url);
+  const assignmentId = getAssignmentIdFromUrl(url);
+  const taskAcceptId = getTaskAcceptIdFromUrl(url);
+  const taskRejectId = getTaskRejectIdFromUrl(url);
   const accessContext = await resolveTaskAccessContext(req);
   const sessionUserId = await getSessionUserId(req);
   const sessionUser = sessionUserId ? await findUserById(sessionUserId) : null;
@@ -826,12 +860,20 @@ export async function handleRequest(
   }
 
   const isWorkItemRoute =
+    (method === "POST" && url === "/documents") ||
+    (method === "GET" && url === "/documents") ||
+    (method === "GET" && documentId !== null) ||
+    (method === "POST" && documentAnalyzeTargetId !== null) ||
+    (method === "POST" && documentCreateWorkItemTargetId !== null) ||
     (method === "POST" && url === "/work-items") ||
     (method === "GET" && url === "/work-items") ||
     (method === "GET" && workItemId !== null) ||
     (method === "PATCH" && workItemId !== null) ||
     (method === "POST" && workItemFileTargetId !== null) ||
-    (method === "POST" && workItemAnalyzeTargetId !== null);
+    (method === "POST" && workItemAnalyzeTargetId !== null) ||
+    (method === "POST" && workItemAssignTargetId !== null) ||
+    (method === "GET" && assignmentId !== null) ||
+    (method === "GET" && pathname === "/assignments");
 
   if (isWorkItemRoute && !accessContext.userId) {
     sendJson(
@@ -906,6 +948,274 @@ export async function handleRequest(
       {
         userId: accessContext.userId,
         workItemId: workItem.id
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && url === "/documents") {
+    if (!(await canCreateDocuments(accessContext))) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "You are not allowed to create documents"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+
+    if (!isCreateDocumentInput(body)) {
+      sendJson(
+        res,
+        400,
+        {
+          error: getCreateDocumentInputError(body)
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId
+        }
+      );
+      return;
+    }
+
+    const document = await createDocument(body, accessContext.userId as string);
+    logAuditEvent("document.created", {
+      userId: accessContext.userId,
+      documentId: document.id,
+      ocrStatus: document.ocrStatus
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        document
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        documentId: document.id
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && url === "/documents") {
+    sendJson(
+      res,
+      200,
+      {
+        documents: await listDocuments(accessContext)
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && documentId) {
+    const document = await getDocumentById(documentId, accessContext);
+
+    if (!document) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Document not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          documentId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      document,
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        documentId
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && documentAnalyzeTargetId) {
+    const analysis = await analyzeDocument(
+      documentAnalyzeTargetId,
+      accessContext.userId as string,
+      accessContext
+    );
+
+    if (!analysis) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Document not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          documentId: documentAnalyzeTargetId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("document.analyzed", {
+      userId: accessContext.userId,
+      documentId: documentAnalyzeTargetId,
+      model: analysis.model ?? null
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        analysis
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        documentId: documentAnalyzeTargetId
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && documentCreateWorkItemTargetId) {
+    const detail = await getDocumentById(documentCreateWorkItemTargetId, accessContext);
+
+    if (!detail) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Document not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          documentId: documentCreateWorkItemTargetId
+        }
+      );
+      return;
+    }
+
+    if (!canCreateWorkItems(accessContext)) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "You are not allowed to create work items from documents"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          documentId: documentCreateWorkItemTargetId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const workItemInput = getCreateWorkItemFromDocumentInput(body, detail.document);
+
+    if (workItemInput.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: workItemInput.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          documentId: documentCreateWorkItemTargetId
+        }
+      );
+      return;
+    }
+
+    const created = await createWorkItemFromDocument(
+      documentCreateWorkItemTargetId,
+      workItemInput.value,
+      accessContext
+    );
+
+    if (!created) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Document not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          documentId: documentCreateWorkItemTargetId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("document.work_item_created", {
+      userId: accessContext.userId,
+      documentId: created.document.id,
+      workItemId: created.workItem.id
+    });
+
+    sendJson(
+      res,
+      201,
+      created,
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        documentId: created.document.id,
+        workItemId: created.workItem.id
       }
     );
     return;
@@ -1149,11 +1459,332 @@ export async function handleRequest(
     return;
   }
 
+  if (method === "POST" && workItemAssignTargetId) {
+    if (accessContext.role !== "principal") {
+      sendJson(
+        res,
+        403,
+        {
+          error: "Principal access required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemAssignTargetId
+        }
+      );
+      return;
+    }
+
+    const detail = await getWorkItemById(workItemAssignTargetId, accessContext);
+
+    if (!detail) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemAssignTargetId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const assignmentInput = getCreateAssignmentInput(body);
+
+    if (assignmentInput.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: assignmentInput.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemAssignTargetId
+        }
+      );
+      return;
+    }
+
+    const task = await createTask(
+      {
+        taskType: "school_workflow",
+        title: `Assignment: ${detail.workItem.title}`,
+        goal: assignmentInput.value.outputRequirement ?? detail.workItem.description,
+        audience: assignmentInput.value.mainDepartmentId,
+        notes: assignmentInput.value.note,
+        workItemId: detail.workItem.id,
+        ownerDepartmentId: assignmentInput.value.mainDepartmentId,
+        progressPercent: 0
+      },
+      null
+    );
+
+    const assignment = await createAssignment({
+      workItemId: detail.workItem.id,
+      mainDepartmentId: assignmentInput.value.mainDepartmentId,
+      coordinatingDepartmentIds: assignmentInput.value.coordinatingDepartmentIds,
+      deadline: assignmentInput.value.deadline,
+      priority: assignmentInput.value.priority,
+      outputRequirement: assignmentInput.value.outputRequirement,
+      note: assignmentInput.value.note,
+      taskId: task.id,
+      createdByUserId: accessContext.userId as string
+    });
+
+    await updateTaskWithAssignmentLink(task.id, assignment.id);
+    await markWorkItemAssigned(detail.workItem.id, accessContext);
+
+    await createAssignmentNotification({
+      message: `New assignment for work item ${detail.workItem.title}`,
+      recipientDepartmentId: assignment.mainDepartmentId,
+      assignmentId: assignment.id,
+      workItemId: detail.workItem.id
+    });
+
+    for (const departmentId of assignment.coordinatingDepartmentIds) {
+      await createAssignmentNotification({
+        message: `Coordinating department requested for ${detail.workItem.title}`,
+        recipientDepartmentId: departmentId,
+        assignmentId: assignment.id,
+        workItemId: detail.workItem.id
+      });
+    }
+
+    logAuditEvent("work_item.assigned", {
+      userId: accessContext.userId,
+      workItemId: detail.workItem.id,
+      assignmentId: assignment.id,
+      taskId: task.id
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        assignment,
+        task
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: detail.workItem.id,
+        assignmentId: assignment.id,
+        taskId: task.id
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && assignmentId) {
+    const assignment = await getAssignmentById(assignmentId, accessContext);
+
+    if (!assignment) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Assignment not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          assignmentId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      assignment,
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        assignmentId
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && pathname === "/assignments") {
+    const workItemIdFilter =
+      parsedUrl.searchParams.get("work_item_id")?.trim() || undefined;
+
+    sendJson(
+      res,
+      200,
+      {
+        assignments: await listAssignments(accessContext, {
+          workItemId: workItemIdFilter
+        })
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: workItemIdFilter
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && taskAcceptId) {
+    const existingTask = await getTaskItemById(taskAcceptId, accessContext);
+
+    if (!existingTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskAcceptId
+        }
+      );
+      return;
+    }
+
+    const updatedTask = await acceptAssignedTask(taskAcceptId);
+
+    if (!updatedTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskAcceptId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("task.assignment_accepted", {
+      userId: accessContext.userId,
+      taskId: updatedTask.id,
+      assignmentId: updatedTask.assignmentId ?? null
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        task: updatedTask
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: updatedTask.id
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && taskRejectId) {
+    const existingTask = await getTaskItemById(taskRejectId, accessContext);
+
+    if (!existingTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskRejectId
+        }
+      );
+      return;
+    }
+
+    const updatedTask = await rejectAssignedTask(taskRejectId);
+
+    if (!updatedTask) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskRejectId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("task.assignment_rejected", {
+      userId: accessContext.userId,
+      taskId: updatedTask.id,
+      assignmentId: updatedTask.assignmentId ?? null
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        task: updatedTask
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: updatedTask.id
+      }
+    );
+    return;
+  }
+
   const requiresAuthenticatedTaskSession =
     (method === "GET" && url === "/tasks") ||
     (method === "POST" && url === "/tasks") ||
     (method === "GET" && taskId !== null) ||
-    (method === "DELETE" && taskId !== null);
+    (method === "DELETE" && taskId !== null) ||
+    (method === "POST" && taskAcceptId !== null) ||
+    (method === "POST" && taskRejectId !== null);
 
   if (
     requiresAuthenticatedTaskSession &&
@@ -1326,6 +1957,21 @@ function getWorkItemIdFromUrl(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+function getDocumentIdFromUrl(url: string): string | null {
+  const match = /^\/documents\/([^/]+)$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getDocumentAnalyzeTargetIdFromUrl(url: string): string | null {
+  const match = /^\/documents\/([^/]+)\/analyze$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getDocumentCreateWorkItemTargetIdFromUrl(url: string): string | null {
+  const match = /^\/documents\/([^/]+)\/create-work-item$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 function getWorkItemFileTargetIdFromUrl(url: string): string | null {
   const match = /^\/work-items\/([^/]+)\/files$/.exec(url);
   return match?.[1] ?? null;
@@ -1333,6 +1979,26 @@ function getWorkItemFileTargetIdFromUrl(url: string): string | null {
 
 function getWorkItemAnalyzeTargetIdFromUrl(url: string): string | null {
   const match = /^\/work-items\/([^/]+)\/analyze$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getWorkItemAssignTargetIdFromUrl(url: string): string | null {
+  const match = /^\/work-items\/([^/]+)\/assign$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getAssignmentIdFromUrl(url: string): string | null {
+  const match = /^\/assignments\/([^/]+)$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskAcceptIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/accept$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskRejectIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/reject-assignment$/.exec(url);
   return match?.[1] ?? null;
 }
 
@@ -1381,6 +2047,231 @@ function getCreateWorkItemInputError(body: unknown): string | null {
   }
 
   return null;
+}
+
+function getCreateDocumentInputError(body: unknown): string | null {
+  if (!body || typeof body !== "object") {
+    return "Request body must be a JSON object";
+  }
+
+  const input = body as Partial<CreateDocumentInput>;
+
+  if (!isNonEmptyString(input.filename)) {
+    return "Field 'filename' is required";
+  }
+
+  if (input.contentType !== undefined && typeof input.contentType !== "string") {
+    return "Field 'contentType' must be a string if provided";
+  }
+
+  if (input.sizeBytes !== undefined && typeof input.sizeBytes !== "number") {
+    return "Field 'sizeBytes' must be a number if provided";
+  }
+
+  if (
+    input.metadata !== undefined &&
+    (!input.metadata || typeof input.metadata !== "object" || Array.isArray(input.metadata))
+  ) {
+    return "Field 'metadata' must be an object if provided";
+  }
+
+  if (input.extractedText !== undefined && typeof input.extractedText !== "string") {
+    return "Field 'extractedText' must be a string if provided";
+  }
+
+  if (
+    input.ocrStatus !== undefined &&
+    input.ocrStatus !== "pending" &&
+    input.ocrStatus !== "ready" &&
+    input.ocrStatus !== "failed"
+  ) {
+    return "Field 'ocrStatus' is invalid";
+  }
+
+  return null;
+}
+
+function isCreateDocumentInput(body: unknown): body is CreateDocumentInput {
+  return getCreateDocumentInputError(body) === null;
+}
+
+function getCreateWorkItemFromDocumentInput(
+  body: unknown,
+  document: Document
+): { value: CreateWorkItemInput; error: string | null } {
+  if (!body || typeof body !== "object") {
+    return {
+      value: buildDefaultWorkItemInputFromDocument(document),
+      error: null
+    };
+  }
+
+  const title = (body as { title?: unknown }).title;
+  const description = (body as { description?: unknown }).description;
+  const departmentId = (body as { departmentId?: unknown }).departmentId;
+
+  if (title !== undefined && !isNonEmptyString(title)) {
+    return {
+      value: buildDefaultWorkItemInputFromDocument(document),
+      error: "Field 'title' must be a non-empty string if provided"
+    };
+  }
+
+  if (description !== undefined && !isNonEmptyString(description)) {
+    return {
+      value: buildDefaultWorkItemInputFromDocument(document),
+      error: "Field 'description' must be a non-empty string if provided"
+    };
+  }
+
+  if (
+    departmentId !== undefined &&
+    departmentId !== null &&
+    typeof departmentId !== "string"
+  ) {
+    return {
+      value: buildDefaultWorkItemInputFromDocument(document),
+      error: "Field 'departmentId' must be a string if provided"
+    };
+  }
+
+  return {
+    value: {
+      title:
+        typeof title === "string" && title.trim().length > 0
+          ? title.trim()
+          : buildDefaultWorkItemInputFromDocument(document).title,
+      description:
+        typeof description === "string" && description.trim().length > 0
+          ? description.trim()
+          : buildDefaultWorkItemInputFromDocument(document).description,
+      departmentId:
+        typeof departmentId === "string" && departmentId.trim().length > 0
+          ? departmentId.trim()
+          : undefined
+    },
+    error: null
+  };
+}
+
+function buildDefaultWorkItemInputFromDocument(document: Document): CreateWorkItemInput {
+  return {
+    title: `Document Intake: ${document.filename}`,
+    description:
+      document.extractedText?.trim().slice(0, 1200) ||
+      `Review uploaded document ${document.filename} and determine the next school workflow action.`,
+    departmentId: undefined
+  };
+}
+
+function getCreateAssignmentInput(
+  body: unknown
+): {
+  value: {
+    mainDepartmentId: string;
+    coordinatingDepartmentIds: string[];
+    deadline?: string;
+    priority: AssignmentPriority;
+    outputRequirement?: string;
+    note?: string;
+  };
+  error: string | null;
+} {
+  const defaultValue = {
+    mainDepartmentId: "",
+    coordinatingDepartmentIds: [],
+    priority: "normal" as AssignmentPriority
+  };
+
+  if (!body || typeof body !== "object") {
+    return {
+      value: defaultValue,
+      error: "Request body must be a JSON object"
+    };
+  }
+
+  const mainDepartmentId = (body as { mainDepartmentId?: unknown }).mainDepartmentId;
+  const coordinatingDepartmentIds =
+    (body as { coordinatingDepartmentIds?: unknown }).coordinatingDepartmentIds;
+  const deadline = (body as { deadline?: unknown }).deadline;
+  const priority = (body as { priority?: unknown }).priority;
+  const outputRequirement =
+    (body as { outputRequirement?: unknown }).outputRequirement;
+  const note = (body as { note?: unknown }).note;
+
+  if (typeof mainDepartmentId !== "string" || mainDepartmentId.trim().length === 0) {
+    return {
+      value: defaultValue,
+      error: "Field 'mainDepartmentId' is required"
+    };
+  }
+
+  if (
+    coordinatingDepartmentIds !== undefined &&
+    !(
+      Array.isArray(coordinatingDepartmentIds) &&
+      coordinatingDepartmentIds.every((value) => typeof value === "string")
+    )
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'coordinatingDepartmentIds' must be a string array if provided"
+    };
+  }
+
+  if (deadline !== undefined && deadline !== null && typeof deadline !== "string") {
+    return {
+      value: defaultValue,
+      error: "Field 'deadline' must be a string if provided"
+    };
+  }
+
+  if (!isAssignmentPriority(priority)) {
+    return {
+      value: defaultValue,
+      error: "Field 'priority' is invalid"
+    };
+  }
+
+  if (
+    outputRequirement !== undefined &&
+    outputRequirement !== null &&
+    typeof outputRequirement !== "string"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'outputRequirement' must be a string if provided"
+    };
+  }
+
+  if (note !== undefined && note !== null && typeof note !== "string") {
+    return {
+      value: defaultValue,
+      error: "Field 'note' must be a string if provided"
+    };
+  }
+
+  return {
+    value: {
+      mainDepartmentId: mainDepartmentId.trim(),
+      coordinatingDepartmentIds:
+        coordinatingDepartmentIds?.map((value) => value.trim()).filter(Boolean) ?? [],
+      deadline:
+        typeof deadline === "string" && deadline.trim().length > 0
+          ? deadline.trim()
+          : undefined,
+      priority,
+      outputRequirement:
+        typeof outputRequirement === "string" && outputRequirement.trim().length > 0
+          ? outputRequirement.trim()
+          : undefined,
+      note:
+        typeof note === "string" && note.trim().length > 0
+          ? note.trim()
+          : undefined
+    },
+    error: null
+  };
 }
 
 function isCreateWorkItemInput(body: unknown): body is CreateWorkItemInput {
@@ -1650,8 +2541,18 @@ function isWorkItemStatus(value: unknown): value is WorkItemStatus {
   return (
     value === "draft" ||
     value === "waiting_review" ||
+    value === "assigned" ||
     value === "in_review" ||
     value === "completed"
+  );
+}
+
+function isAssignmentPriority(value: unknown): value is AssignmentPriority {
+  return (
+    value === "low" ||
+    value === "normal" ||
+    value === "high" ||
+    value === "urgent"
   );
 }
 

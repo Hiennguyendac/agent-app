@@ -30,6 +30,13 @@ export interface CreateTaskInput {
   goal: string;
   audience: string;
   notes?: string;
+  taskType?: Task["taskType"];
+  workItemId?: string;
+  assignmentId?: string;
+  ownerDepartmentId?: string;
+  progressPercent?: number;
+  acceptedAt?: string;
+  completedAt?: string;
 }
 
 export interface TaskListItem {
@@ -53,10 +60,13 @@ export async function listTasks(accessContext?: TaskAccessContext): Promise<Task
           t.status,
           t.created_at,
           t.owner_id,
-          owner_user.department_id AS owner_department_id
+          t.work_item_id,
+          t.assignment_id,
+          t.owner_department_id,
+          t.progress_percent,
+          t.accepted_at,
+          t.completed_at
         FROM tasks t
-        LEFT JOIN app_users owner_user
-          ON owner_user.id = t.owner_id
         ${ownershipClause.clause}
         ORDER BY t.created_at DESC
       `,
@@ -92,10 +102,13 @@ export async function listTaskItems(
           t.status,
           t.created_at,
           t.owner_id,
-          owner_user.department_id AS owner_department_id
+          t.work_item_id,
+          t.assignment_id,
+          t.owner_department_id,
+          t.progress_percent,
+          t.accepted_at,
+          t.completed_at
         FROM tasks t
-        LEFT JOIN app_users owner_user
-          ON owner_user.id = t.owner_id
         ${ownershipClause.clause}
         ORDER BY t.created_at DESC
       `,
@@ -157,10 +170,13 @@ export async function getTaskItemById(
           t.status,
           t.created_at,
           t.owner_id,
-          owner_user.department_id AS owner_department_id
+          t.work_item_id,
+          t.assignment_id,
+          t.owner_department_id,
+          t.progress_percent,
+          t.accepted_at,
+          t.completed_at
         FROM tasks t
-        LEFT JOIN app_users owner_user
-          ON owner_user.id = t.owner_id
         WHERE t.id = $1
         ${ownershipClause.clause ? `AND (${ownershipClause.clause.replace(/^WHERE\s+/u, "")})` : ""}
       `,
@@ -230,12 +246,18 @@ export async function createTask(
 ): Promise<Task> {
   const task: Task = {
     id: createTaskId(),
-    taskType: "growth",
+    taskType: input.taskType ?? "growth",
     title: input.title,
     goal: input.goal,
     audience: input.audience,
     notes: input.notes,
     ownerId: ownerId ?? undefined,
+    workItemId: input.workItemId,
+    assignmentId: input.assignmentId,
+    ownerDepartmentId: input.ownerDepartmentId,
+    progressPercent: input.progressPercent ?? 0,
+    acceptedAt: input.acceptedAt,
+    completedAt: input.completedAt,
     status: INITIAL_TASK_STATUS,
     createdAt: new Date().toISOString()
   };
@@ -252,7 +274,64 @@ export async function createTask(
 
   upsertTaskInMemory(task);
   upsertTaskOwnerInMemory(task.id, ownerId);
-  upsertTaskOwnerDepartmentInMemory(task.id, null);
+  upsertTaskOwnerDepartmentInMemory(task.id, input.ownerDepartmentId ?? null);
+  return task;
+}
+
+export async function acceptAssignedTask(taskId: string): Promise<Task | undefined> {
+  return updateTaskAssignmentState(taskId, "running", {
+    acceptedAt: new Date().toISOString(),
+    progressPercent: 10
+  });
+}
+
+export async function rejectAssignedTask(taskId: string): Promise<Task | undefined> {
+  return updateTaskAssignmentState(taskId, "failed", {
+    progressPercent: 0
+  });
+}
+
+export async function updateTaskWithAssignmentLink(
+  taskId: string,
+  assignmentId: string
+): Promise<Task | undefined> {
+  const pool = getDbPool();
+  const result = await pool.query(
+    `
+      UPDATE tasks
+      SET assignment_id = $2
+      WHERE id = $1
+      RETURNING
+        id,
+        task_type,
+        title,
+        goal,
+        audience,
+        notes,
+        status,
+        created_at,
+        owner_id,
+        work_item_id,
+        assignment_id,
+        owner_department_id,
+        progress_percent,
+        accepted_at,
+        completed_at
+    `,
+    [taskId, assignmentId]
+  );
+
+  if (result.rows.length === 0) {
+    return undefined;
+  }
+
+  const task = mapTaskRowToTask(result.rows[0]);
+  upsertTaskInMemory(task);
+  upsertTaskOwnerInMemory(task.id, result.rows[0].owner_id ?? null);
+  upsertTaskOwnerDepartmentInMemory(
+    task.id,
+    (result.rows[0].owner_department_id as string | null) ?? null
+  );
   return task;
 }
 
@@ -333,9 +412,15 @@ async function insertTaskIntoPostgres(
         notes,
         status,
         created_at,
-        owner_id
+        owner_id,
+        work_item_id,
+        assignment_id,
+        owner_department_id,
+        progress_percent,
+        accepted_at,
+        completed_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     `,
     [
       task.id,
@@ -346,7 +431,13 @@ async function insertTaskIntoPostgres(
       task.notes ?? null,
       task.status,
       task.createdAt,
-      ownerId
+      ownerId,
+      task.workItemId ?? null,
+      task.assignmentId ?? null,
+      task.ownerDepartmentId ?? null,
+      task.progressPercent ?? 0,
+      task.acceptedAt ?? null,
+      task.completedAt ?? null
     ]
   );
 }
@@ -371,7 +462,13 @@ async function updateTaskStatusInPostgres(
         notes,
         status,
         created_at,
-        owner_id
+        owner_id,
+        work_item_id,
+        assignment_id,
+        owner_department_id,
+        progress_percent,
+        accepted_at,
+        completed_at
     `,
     [taskId, status]
   );
@@ -381,6 +478,56 @@ async function updateTaskStatusInPostgres(
   }
 
   return mapTaskRowToTask(result.rows[0]);
+}
+
+async function updateTaskAssignmentState(
+  taskId: string,
+  status: TaskStatus,
+  options: {
+    acceptedAt?: string;
+    progressPercent?: number;
+  }
+): Promise<Task | undefined> {
+  const pool = getDbPool();
+  const result = await pool.query(
+    `
+      UPDATE tasks
+      SET status = $2,
+          accepted_at = COALESCE($3, accepted_at),
+          progress_percent = COALESCE($4, progress_percent)
+      WHERE id = $1
+      RETURNING
+        id,
+        task_type,
+        title,
+        goal,
+        audience,
+        notes,
+        status,
+        created_at,
+        owner_id,
+        work_item_id,
+        assignment_id,
+        owner_department_id,
+        progress_percent,
+        accepted_at,
+        completed_at
+    `,
+    [taskId, status, options.acceptedAt ?? null, options.progressPercent ?? null]
+  );
+
+  if (result.rows.length === 0) {
+    return undefined;
+  }
+
+  const task = mapTaskRowToTask(result.rows[0]);
+  upsertTaskInMemory(task);
+  upsertTaskOwnerInMemory(task.id, result.rows[0].owner_id ?? null);
+  upsertTaskOwnerDepartmentInMemory(
+    task.id,
+    (result.rows[0].owner_department_id as string | null) ?? null
+  );
+  return task;
 }
 
 async function insertTaskResultIntoPostgres(result: TaskResult): Promise<void> {
@@ -465,6 +612,15 @@ function mapTaskRowToTask(row: any): Task {
     audience: row.audience,
     notes: row.notes ?? undefined,
     ownerId: row.owner_id ?? undefined,
+    workItemId: row.work_item_id ?? undefined,
+    assignmentId: row.assignment_id ?? undefined,
+    ownerDepartmentId: row.owner_department_id ?? undefined,
+    progressPercent:
+      row.progress_percent !== null && row.progress_percent !== undefined
+        ? Number(row.progress_percent)
+        : undefined,
+    acceptedAt: row.accepted_at ?? undefined,
+    completedAt: row.completed_at ?? undefined,
     status: row.status,
     createdAt: row.created_at
   };
@@ -571,12 +727,14 @@ function hasTaskAccess(
 
   const ownerId = taskOwners.get(taskId) ?? null;
   const ownerDepartmentId = taskOwnerDepartments.get(taskId) ?? null;
+  const isLegacyUnowned =
+    ownerId === null && ownerDepartmentId === null;
 
-  if (accessContext.role === "principal") {
+  if (accessContext.role === "principal" || accessContext.role === "admin") {
     return true;
   }
 
-  if (!ownerId) {
+  if (isLegacyUnowned) {
     return true;
   }
 
@@ -602,7 +760,7 @@ function buildOwnershipWhereClause(
     };
   }
 
-  if (accessContext.role === "principal") {
+  if (accessContext.role === "principal" || accessContext.role === "admin") {
     return {
       clause: "",
       values: []
@@ -611,20 +769,20 @@ function buildOwnershipWhereClause(
 
   if (!accessContext.userId) {
     return {
-      clause: "WHERE t.owner_id IS NULL",
+      clause: "WHERE t.owner_id IS NULL AND t.owner_department_id IS NULL",
       values: []
     };
   }
 
   if (accessContext.role === "department_head" && accessContext.departmentId) {
     return {
-      clause: `WHERE (t.owner_id = $${startIndex} OR owner_user.department_id = $${startIndex + 1} OR t.owner_id IS NULL)`,
+      clause: `WHERE (t.owner_id = $${startIndex} OR t.owner_department_id = $${startIndex + 1} OR (t.owner_id IS NULL AND t.owner_department_id IS NULL))`,
       values: [accessContext.userId, accessContext.departmentId]
     };
   }
 
   return {
-    clause: `WHERE (t.owner_id = $${startIndex} OR t.owner_id IS NULL)`,
+    clause: `WHERE (t.owner_id = $${startIndex} OR (t.owner_id IS NULL AND t.owner_department_id IS NULL))`,
     values: [accessContext.userId]
   };
 }

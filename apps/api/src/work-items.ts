@@ -211,6 +211,19 @@ export async function updateWorkItem(
   return result.rows.length > 0 ? mapWorkItemRow(result.rows[0]) : null;
 }
 
+export async function markWorkItemAssigned(
+  workItemId: string,
+  accessContext: TaskAccessContext
+): Promise<WorkItem | null> {
+  return updateWorkItem(
+    workItemId,
+    {
+      status: "assigned"
+    },
+    accessContext
+  );
+}
+
 export async function addWorkItemFile(
   workItemId: string,
   input: CreateWorkItemFileInput,
