@@ -47,17 +47,21 @@ export async function getSessionUserId(req: IncomingMessage): Promise<string | n
     const result = await getDbPool().query(
       `
         SELECT
-          user_id,
-          EXTRACT(EPOCH FROM expires_at) * 1000 AS expires_at_ms
-        FROM auth_sessions
-        WHERE id = $1
+          s.user_id,
+          EXTRACT(EPOCH FROM s.expires_at) * 1000 AS expires_at_ms
+        FROM auth_sessions s
+        INNER JOIN app_users u
+          ON u.id = s.user_id
+         AND u.is_active = true
+        WHERE s.id = $1
         LIMIT 1
       `,
       [sessionId]
     );
 
     if (result.rows.length === 0) {
-      return getFallbackSessionUserId(sessionId);
+      fallbackSessions.delete(sessionId);
+      return null;
     }
 
     const session = {
