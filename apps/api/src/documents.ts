@@ -135,7 +135,7 @@ export async function getDocumentById(
         d.created_at
       FROM documents d
       WHERE d.id = $1
-      ${access.clause ? `AND (${access.clause.replace(/^WHERE\\s+/u, "")})` : ""}
+      ${access.clause ? `AND (${access.clause.replace(/^WHERE\s+/u, "")})` : ""}
       LIMIT 1
     `,
     [documentId, ...access.values]
