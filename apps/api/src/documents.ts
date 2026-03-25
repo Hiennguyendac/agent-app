@@ -26,6 +26,17 @@ export async function createDocument(
   input: CreateDocumentInput,
   uploadedByUserId: string
 ): Promise<Document> {
+  const sanitizedFilename = stripNullCharacters(input.filename);
+  const sanitizedContentType =
+    typeof input.contentType === "string"
+      ? stripNullCharacters(input.contentType)
+      : null;
+  const sanitizedExtractedText =
+    typeof input.extractedText === "string"
+      ? stripNullCharacters(input.extractedText)
+      : null;
+  const sanitizedMetadata = sanitizeMetadataValue(input.metadata ?? {});
+
   const result = await getDbPool().query(
     `
       INSERT INTO documents (
@@ -53,11 +64,11 @@ export async function createDocument(
     `,
     [
       createDocumentId(),
-      input.filename,
-      input.contentType ?? null,
+      sanitizedFilename,
+      sanitizedContentType,
       input.sizeBytes ?? null,
-      JSON.stringify(input.metadata ?? {}),
-      input.extractedText ?? null,
+      JSON.stringify(sanitizedMetadata),
+      sanitizedExtractedText,
       input.ocrStatus ?? "ready",
       uploadedByUserId
     ]
@@ -328,4 +339,29 @@ function createDocumentId(): string {
 
 function createDocumentAnalysisId(documentId: string): string {
   return `doc_analysis_${documentId}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function stripNullCharacters(value: string): string {
+  return value.replaceAll("\u0000", "");
+}
+
+function sanitizeMetadataValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return stripNullCharacters(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(sanitizeMetadataValue);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => [
+        stripNullCharacters(key),
+        sanitizeMetadataValue(entryValue)
+      ])
+    );
+  }
+
+  return value;
 }

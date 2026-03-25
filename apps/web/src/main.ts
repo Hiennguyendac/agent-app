@@ -3092,7 +3092,18 @@ async function handleCreateDocument(): Promise<void> {
   setStatus("Uploading document...", "loading");
 
   try {
-    const extractedText = await file.text();
+    const canInlineExtractText = isInlineExtractableDocument(file);
+    const extractedText = canInlineExtractText
+      ? sanitizeUploadedText(await file.text())
+      : undefined;
+    const ocrStatus: DocumentOcrStatus =
+      canInlineExtractText && extractedText && extractedText.trim().length > 0
+        ? "ready"
+        : "pending";
+
+    metadata.originalFilename = file.name;
+    metadata.inlineTextExtraction = canInlineExtractText;
+
     const response = await fetch("/api/documents", {
       method: "POST",
       headers: buildApiHeaders({
@@ -3104,7 +3115,7 @@ async function handleCreateDocument(): Promise<void> {
         sizeBytes: file.size,
         metadata,
         extractedText,
-        ocrStatus: extractedText.trim().length > 0 ? "ready" : "pending"
+        ocrStatus
       })
     });
 
@@ -3131,6 +3142,28 @@ async function handleCreateDocument(): Promise<void> {
   } finally {
     createDocumentButton.disabled = false;
   }
+}
+
+function isInlineExtractableDocument(file: File): boolean {
+  const lowerName = file.name.toLowerCase();
+
+  if (
+    file.type.startsWith("text/") ||
+    lowerName.endsWith(".txt") ||
+    lowerName.endsWith(".md") ||
+    lowerName.endsWith(".json") ||
+    lowerName.endsWith(".csv") ||
+    lowerName.endsWith(".xml") ||
+    lowerName.endsWith(".html")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function sanitizeUploadedText(value: string): string {
+  return value.replaceAll("\u0000", "").trim();
 }
 
 async function handleAnalyzeDocument(documentId: string): Promise<void> {
