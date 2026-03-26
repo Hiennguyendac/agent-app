@@ -43,26 +43,36 @@ import {
 } from "./session.js";
 import {
   approveTaskResponse,
+  createTaskUpdate,
   createTask,
   deleteTaskWithAccess,
   getTaskItemById,
+  listTaskUpdates,
   listTaskItems,
   saveTaskResult,
   submitTaskResponse,
   updateTaskWithAssignmentLink,
   updateTaskStatus,
+  type CreateTaskUpdateInput,
   type CreateTaskInput
 } from "./store.js";
+import {
+  createSubmissionReview,
+  listSubmissionReviews,
+  type CreateSubmissionReviewInput
+} from "./submission-reviews.js";
 import {
   acceptAssignedTask,
   rejectAssignedTask
 } from "./store.js";
 import {
+  acceptAssignment,
   createAssignment,
   createAssignmentNotification,
   getAssignmentById,
   listAssignments,
-  listNotifications
+  listNotifications,
+  requestAssignmentAdjustment
 } from "./assignments.js";
 import {
   addWorkItemFile,
@@ -72,9 +82,11 @@ import {
   getWorkItemById,
   listWorkItems,
   markWorkItemAssigned,
+  reviewWorkItem,
   updateWorkItem,
   type CreateWorkItemFileInput,
   type CreateWorkItemInput,
+  type ReviewWorkItemInput,
   type UpdateWorkItemInput,
   type WorkItemListItem
 } from "./work-items.js";
@@ -123,6 +135,7 @@ export async function handleRequest(
   const workItemId = getWorkItemIdFromUrl(url);
   const workItemFileTargetId = getWorkItemFileTargetIdFromUrl(url);
   const workItemAnalyzeTargetId = getWorkItemAnalyzeTargetIdFromUrl(url);
+  const workItemReviewTargetId = getWorkItemReviewTargetIdFromUrl(url);
   const workItemAssignTargetId = getWorkItemAssignTargetIdFromUrl(url);
   const documentId = getDocumentIdFromUrl(url);
   const documentAnalyzeTargetId = getDocumentAnalyzeTargetIdFromUrl(url);
@@ -131,6 +144,8 @@ export async function handleRequest(
   const assignmentId = getAssignmentIdFromUrl(url);
   const taskAcceptId = getTaskAcceptIdFromUrl(url);
   const taskRejectId = getTaskRejectIdFromUrl(url);
+  const taskUpdatesId = getTaskUpdatesIdFromUrl(url);
+  const taskReviewsId = getTaskReviewsIdFromUrl(url);
   const taskSubmitResponseId = getTaskSubmitResponseIdFromUrl(url);
   const taskApproveResponseId = getTaskApproveResponseIdFromUrl(url);
   const accessContext = await resolveTaskAccessContext(req);
@@ -940,6 +955,7 @@ export async function handleRequest(
     (method === "PATCH" && workItemId !== null) ||
     (method === "POST" && workItemFileTargetId !== null) ||
     (method === "POST" && workItemAnalyzeTargetId !== null) ||
+    (method === "POST" && workItemReviewTargetId !== null) ||
     (method === "POST" && workItemAssignTargetId !== null) ||
     (method === "GET" && assignmentId !== null) ||
     (method === "GET" && pathname === "/assignments");
@@ -1548,6 +1564,130 @@ export async function handleRequest(
     return;
   }
 
+  if (method === "POST" && workItemReviewTargetId) {
+    if (
+      accessContext.role !== "principal" &&
+      accessContext.role !== "admin"
+    ) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "Principal or admin access required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemReviewTargetId
+        }
+      );
+      return;
+    }
+
+    const detail = await getWorkItemById(workItemReviewTargetId, accessContext);
+
+    if (!detail) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemReviewTargetId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const principalReviewInput = getPrincipalReviewInput(body);
+
+    if (principalReviewInput.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: principalReviewInput.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemReviewTargetId
+        }
+      );
+      return;
+    }
+
+    const updatedWorkItem = await reviewWorkItem(
+      workItemReviewTargetId,
+      principalReviewInput.value,
+      accessContext.userId as string,
+      accessContext
+    );
+
+    if (!updatedWorkItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemReviewTargetId
+        }
+      );
+      return;
+    }
+
+    await createAssignmentNotification({
+      message:
+        principalReviewInput.value.decision === "assign"
+          ? `Principal review completed for ${updatedWorkItem.title}. Ready for assignment.`
+          : principalReviewInput.value.decision === "hold"
+            ? `Work item ${updatedWorkItem.title} was placed on hold.`
+            : `Work item ${updatedWorkItem.title} was returned for intake completion.`,
+      recipientUserId: updatedWorkItem.createdByUserId,
+      workItemId: updatedWorkItem.id
+    });
+
+    logAuditEvent("work_item.principal_reviewed", {
+      userId: accessContext.userId,
+      workItemId: updatedWorkItem.id,
+      decision: principalReviewInput.value.decision,
+      leadDepartmentId: principalReviewInput.value.leadDepartmentId ?? null,
+      status: updatedWorkItem.status
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        workItem: updatedWorkItem
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: updatedWorkItem.id
+      }
+    );
+    return;
+  }
+
   if (method === "POST" && workItemAssignTargetId) {
     if (accessContext.role !== "principal") {
       sendJson(
@@ -1763,6 +1903,316 @@ export async function handleRequest(
     return;
   }
 
+  if (method === "GET" && taskUpdatesId) {
+    const taskItem = await getTaskItemById(taskUpdatesId, accessContext);
+
+    if (!taskItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskUpdatesId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        updates: await listTaskUpdates(taskUpdatesId, accessContext)
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: taskUpdatesId
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && taskUpdatesId) {
+    const taskItem = await getTaskItemById(taskUpdatesId, accessContext);
+
+    if (!taskItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskUpdatesId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const taskUpdateInput = getCreateTaskUpdateInput(body);
+
+    if (taskUpdateInput.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: taskUpdateInput.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskUpdatesId
+        }
+      );
+      return;
+    }
+
+    const update = await createTaskUpdate(
+      taskUpdatesId,
+      taskUpdateInput.value,
+      accessContext.userId as string,
+      accessContext
+    );
+
+    if (!update) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskUpdatesId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("task.execution_updated", {
+      userId: accessContext.userId,
+      taskId: taskUpdatesId,
+      executionStatus: update.executionStatus,
+      progressPercent: update.progressPercent
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        update
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: taskUpdatesId
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && taskReviewsId) {
+    const taskItem = await getTaskItemById(taskReviewsId, accessContext);
+
+    if (!taskItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskReviewsId
+        }
+      );
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        reviews: await listSubmissionReviews(taskReviewsId, accessContext)
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: taskReviewsId
+      }
+    );
+    return;
+  }
+
+  if (method === "POST" && taskReviewsId) {
+    if (
+      accessContext.role !== "principal" &&
+      accessContext.role !== "admin"
+    ) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "Principal or admin access required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskReviewsId
+        }
+      );
+      return;
+    }
+
+    const taskItem = await getTaskItemById(taskReviewsId, accessContext);
+
+    if (!taskItem) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskReviewsId
+        }
+      );
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const submissionReviewInput = getCreateSubmissionReviewInput(body);
+
+    if (submissionReviewInput.error) {
+      sendJson(
+        res,
+        400,
+        {
+          error: submissionReviewInput.error
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskReviewsId
+        }
+      );
+      return;
+    }
+
+    const review = await createSubmissionReview(
+      taskReviewsId,
+      submissionReviewInput.value,
+      accessContext.userId as string,
+      accessContext
+    );
+
+    if (!review) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Task not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          taskId: taskReviewsId
+        }
+      );
+      return;
+    }
+
+    if (taskItem.task.workItemId) {
+      const nextStatus =
+        review.reviewOutcome === "ready_for_principal_approval"
+          ? "waiting_principal_approval"
+          : review.reviewOutcome === "needs_supplement"
+            ? "needs_supplement"
+            : review.reviewOutcome === "needs_rework"
+              ? "needs_rework"
+              : review.reviewOutcome === "late_explanation_required"
+                ? "late_explanation_required"
+                : "waiting_assignment";
+
+      await updateWorkItem(
+        taskItem.task.workItemId,
+        {
+          status: nextStatus
+        },
+        accessContext
+      );
+    }
+
+    await createAssignmentNotification({
+      message: buildSubmissionReviewNotificationMessage(
+        taskItem.task.title,
+        review.reviewOutcome
+      ),
+      recipientDepartmentId: taskItem.task.ownerDepartmentId,
+      assignmentId: taskItem.task.assignmentId,
+      workItemId: taskItem.task.workItemId
+    });
+
+    logAuditEvent("task.submission_reviewed", {
+      userId: accessContext.userId,
+      taskId: taskReviewsId,
+      reviewOutcome: review.reviewOutcome,
+      returnStage: review.returnStage
+    });
+
+    sendJson(
+      res,
+      201,
+      {
+        review
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        taskId: taskReviewsId
+      }
+    );
+    return;
+  }
+
   if (method === "POST" && taskAcceptId) {
     const existingTask = await getTaskItemById(taskAcceptId, accessContext);
 
@@ -1804,10 +2254,19 @@ export async function handleRequest(
       return;
     }
 
+    const updatedAssignment = updatedTask.assignmentId
+      ? await acceptAssignment(
+          updatedTask.assignmentId,
+          accessContext.userId as string,
+          accessContext
+        )
+      : null;
+
     logAuditEvent("task.assignment_accepted", {
       userId: accessContext.userId,
       taskId: updatedTask.id,
-      assignmentId: updatedTask.assignmentId ?? null
+      assignmentId: updatedTask.assignmentId ?? null,
+      assignmentStatus: updatedAssignment?.status ?? null
     });
 
     if (updatedTask.assignmentId) {
@@ -1865,6 +2324,8 @@ export async function handleRequest(
       return;
     }
 
+    const body = await readJsonBody(req);
+    const adjustmentReason = getAdjustmentReason(body);
     const updatedTask = await rejectAssignedTask(taskRejectId);
 
     if (!updatedTask) {
@@ -1885,10 +2346,21 @@ export async function handleRequest(
       return;
     }
 
+    const updatedAssignment = updatedTask.assignmentId
+      ? await requestAssignmentAdjustment(
+          updatedTask.assignmentId,
+          accessContext.userId as string,
+          adjustmentReason,
+          accessContext
+        )
+      : null;
+
     logAuditEvent("task.assignment_rejected", {
       userId: accessContext.userId,
       taskId: updatedTask.id,
-      assignmentId: updatedTask.assignmentId ?? null
+      assignmentId: updatedTask.assignmentId ?? null,
+      adjustmentReason,
+      assignmentStatus: updatedAssignment?.status ?? null
     });
 
     if (updatedTask.assignmentId) {
@@ -2056,6 +2528,36 @@ export async function handleRequest(
       return;
     }
 
+    if (existingTask.task.workItemId) {
+      const linkedWorkItem = await getWorkItemById(
+        existingTask.task.workItemId,
+        accessContext
+      );
+
+      if (
+        linkedWorkItem &&
+        linkedWorkItem.workItem.status !== "waiting_principal_approval"
+      ) {
+        sendJson(
+          res,
+          409,
+          {
+            error: "Submission review must mark the work item ready for principal approval first"
+          },
+          startedAtMs,
+          method,
+          url,
+          {
+            userId: accessContext.userId,
+            taskId: taskApproveResponseId,
+            workItemId: linkedWorkItem.workItem.id,
+            workItemStatus: linkedWorkItem.workItem.status
+          }
+        );
+        return;
+      }
+    }
+
     const updatedTask = await approveTaskResponse(taskApproveResponseId);
 
     if (!updatedTask) {
@@ -2131,6 +2633,10 @@ export async function handleRequest(
     (method === "POST" && url === "/tasks") ||
     (method === "GET" && taskId !== null) ||
     (method === "DELETE" && taskId !== null) ||
+    (taskUpdatesId !== null &&
+      (method === "GET" || method === "POST")) ||
+    (taskReviewsId !== null &&
+      (method === "GET" || method === "POST")) ||
     (method === "POST" && taskAcceptId !== null) ||
     (method === "POST" && taskRejectId !== null) ||
     (method === "POST" && taskSubmitResponseId !== null) ||
@@ -2332,6 +2838,11 @@ function getWorkItemAnalyzeTargetIdFromUrl(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+function getWorkItemReviewTargetIdFromUrl(url: string): string | null {
+  const match = /^\/work-items\/([^/]+)\/principal-review$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 function getWorkItemAssignTargetIdFromUrl(url: string): string | null {
   const match = /^\/work-items\/([^/]+)\/assign$/.exec(url);
   return match?.[1] ?? null;
@@ -2349,6 +2860,16 @@ function getTaskAcceptIdFromUrl(url: string): string | null {
 
 function getTaskRejectIdFromUrl(url: string): string | null {
   const match = /^\/tasks\/([^/]+)\/reject-assignment$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskUpdatesIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/updates$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskReviewsIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/reviews$/.exec(url);
   return match?.[1] ?? null;
 }
 
@@ -2640,6 +3161,274 @@ function getCreateAssignmentInput(
       note:
         typeof note === "string" && note.trim().length > 0
           ? note.trim()
+          : undefined
+    },
+    error: null
+  };
+}
+
+function getPrincipalReviewInput(
+  body: unknown
+): {
+  value: ReviewWorkItemInput;
+  error: string | null;
+} {
+  const defaultValue: ReviewWorkItemInput = {
+    decision: "hold",
+    coordinatingDepartmentIds: [],
+    priority: "normal"
+  };
+
+  if (!body || typeof body !== "object") {
+    return {
+      value: defaultValue,
+      error: "Request body must be a JSON object"
+    };
+  }
+
+  const decision = (body as { decision?: unknown }).decision;
+  const leadDepartmentId = (body as { leadDepartmentId?: unknown }).leadDepartmentId;
+  const coordinatingDepartmentIds =
+    (body as { coordinatingDepartmentIds?: unknown }).coordinatingDepartmentIds;
+  const priority = (body as { priority?: unknown }).priority;
+  const outputRequirement =
+    (body as { outputRequirement?: unknown }).outputRequirement;
+  const principalNote = (body as { principalNote?: unknown }).principalNote;
+
+  if (
+    decision !== "assign" &&
+    decision !== "return_intake" &&
+    decision !== "hold"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'decision' is invalid"
+    };
+  }
+
+  if (
+    leadDepartmentId !== undefined &&
+    leadDepartmentId !== null &&
+    typeof leadDepartmentId !== "string"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'leadDepartmentId' must be a string if provided"
+    };
+  }
+
+  if (
+    coordinatingDepartmentIds !== undefined &&
+    !(
+      Array.isArray(coordinatingDepartmentIds) &&
+      coordinatingDepartmentIds.every((value) => typeof value === "string")
+    )
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'coordinatingDepartmentIds' must be a string array if provided"
+    };
+  }
+
+  if (priority !== undefined && !isAssignmentPriority(priority)) {
+    return {
+      value: defaultValue,
+      error: "Field 'priority' is invalid"
+    };
+  }
+
+  if (
+    outputRequirement !== undefined &&
+    outputRequirement !== null &&
+    typeof outputRequirement !== "string"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'outputRequirement' must be a string if provided"
+    };
+  }
+
+  if (
+    principalNote !== undefined &&
+    principalNote !== null &&
+    typeof principalNote !== "string"
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'principalNote' must be a string if provided"
+    };
+  }
+
+  if (
+    decision === "assign" &&
+    (typeof leadDepartmentId !== "string" || leadDepartmentId.trim().length === 0)
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'leadDepartmentId' is required when decision is assign"
+    };
+  }
+
+  return {
+    value: {
+      decision,
+      leadDepartmentId:
+        typeof leadDepartmentId === "string" && leadDepartmentId.trim().length > 0
+          ? leadDepartmentId.trim()
+          : null,
+      coordinatingDepartmentIds:
+        coordinatingDepartmentIds?.map((value) => value.trim()).filter(Boolean) ?? [],
+      priority: priority ?? "normal",
+      outputRequirement:
+        typeof outputRequirement === "string" && outputRequirement.trim().length > 0
+          ? outputRequirement.trim()
+          : null,
+      principalNote:
+        typeof principalNote === "string" && principalNote.trim().length > 0
+          ? principalNote.trim()
+          : null
+    },
+    error: null
+  };
+}
+
+function getAdjustmentReason(body: unknown): string | null {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+
+  const reason = (body as { reason?: unknown }).reason;
+
+  if (typeof reason !== "string") {
+    return null;
+  }
+
+  const trimmed = reason.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function getCreateTaskUpdateInput(
+  body: unknown
+): {
+  value: CreateTaskUpdateInput;
+  error: string | null;
+} {
+  const defaultValue: CreateTaskUpdateInput = {
+    executionStatus: "running",
+    progressPercent: 0
+  };
+
+  if (!body || typeof body !== "object") {
+    return {
+      value: defaultValue,
+      error: "Request body must be a JSON object"
+    };
+  }
+
+  const executionStatus =
+    (body as { executionStatus?: unknown }).executionStatus;
+  const progressPercent =
+    (body as { progressPercent?: unknown }).progressPercent;
+  const note = (body as { note?: unknown }).note;
+
+  if (!isTaskExecutionStatus(executionStatus)) {
+    return {
+      value: defaultValue,
+      error: "Field 'executionStatus' is invalid"
+    };
+  }
+
+  if (
+    typeof progressPercent !== "number" ||
+    Number.isNaN(progressPercent) ||
+    progressPercent < 0 ||
+    progressPercent > 100
+  ) {
+    return {
+      value: defaultValue,
+      error: "Field 'progressPercent' must be a number between 0 and 100"
+    };
+  }
+
+  if (note !== undefined && note !== null && typeof note !== "string") {
+    return {
+      value: defaultValue,
+      error: "Field 'note' must be a string if provided"
+    };
+  }
+
+  return {
+    value: {
+      executionStatus,
+      progressPercent,
+      note: typeof note === "string" && note.trim().length > 0 ? note.trim() : undefined
+    },
+    error: null
+  };
+}
+
+function getCreateSubmissionReviewInput(
+  body: unknown
+): {
+  value: CreateSubmissionReviewInput;
+  error: string | null;
+} {
+  const defaultValue: CreateSubmissionReviewInput = {
+    reviewOutcome: "needs_supplement",
+    returnStage: "submission"
+  };
+
+  if (!body || typeof body !== "object") {
+    return {
+      value: defaultValue,
+      error: "Request body must be a JSON object"
+    };
+  }
+
+  const reviewOutcome = (body as { reviewOutcome?: unknown }).reviewOutcome;
+  const returnStage = (body as { returnStage?: unknown }).returnStage;
+  const reasonCode = (body as { reasonCode?: unknown }).reasonCode;
+  const reasonText = (body as { reasonText?: unknown }).reasonText;
+
+  if (!isSubmissionReviewOutcome(reviewOutcome)) {
+    return {
+      value: defaultValue,
+      error: "Field 'reviewOutcome' is invalid"
+    };
+  }
+
+  if (!isSubmissionReturnStage(returnStage)) {
+    return {
+      value: defaultValue,
+      error: "Field 'returnStage' is invalid"
+    };
+  }
+
+  if (reasonCode !== undefined && reasonCode !== null && typeof reasonCode !== "string") {
+    return {
+      value: defaultValue,
+      error: "Field 'reasonCode' must be a string if provided"
+    };
+  }
+
+  if (reasonText !== undefined && reasonText !== null && typeof reasonText !== "string") {
+    return {
+      value: defaultValue,
+      error: "Field 'reasonText' must be a string if provided"
+    };
+  }
+
+  return {
+    value: {
+      reviewOutcome,
+      returnStage,
+      reasonCode:
+        typeof reasonCode === "string" && reasonCode.trim().length > 0
+          ? reasonCode.trim()
+          : undefined,
+      reasonText:
+        typeof reasonText === "string" && reasonText.trim().length > 0
+          ? reasonText.trim()
           : undefined
     },
     error: null
@@ -3041,9 +3830,16 @@ function isWorkItemStatus(value: unknown): value is WorkItemStatus {
   return (
     value === "draft" ||
     value === "waiting_review" ||
+    value === "waiting_assignment" ||
     value === "assigned" ||
+    value === "on_hold" ||
     value === "in_review" ||
-    value === "completed"
+    value === "needs_supplement" ||
+    value === "needs_rework" ||
+    value === "late_explanation_required" ||
+    value === "waiting_principal_approval" ||
+    value === "completed" ||
+    value === "archived"
   );
 }
 
@@ -3054,6 +3850,65 @@ function isAssignmentPriority(value: unknown): value is AssignmentPriority {
     value === "high" ||
     value === "urgent"
   );
+}
+
+function isTaskExecutionStatus(
+  value: unknown
+): value is CreateTaskUpdateInput["executionStatus"] {
+  return (
+    value === "pending" ||
+    value === "running" ||
+    value === "waiting_dependency" ||
+    value === "needs_data" ||
+    value === "internally_completed" ||
+    value === "submitted"
+  );
+}
+
+function isSubmissionReviewOutcome(
+  value: unknown
+): value is CreateSubmissionReviewInput["reviewOutcome"] {
+  return (
+    value === "needs_supplement" ||
+    value === "needs_rework" ||
+    value === "late_explanation_required" ||
+    value === "needs_reassignment" ||
+    value === "ready_for_principal_approval"
+  );
+}
+
+function isSubmissionReturnStage(
+  value: unknown
+): value is CreateSubmissionReviewInput["returnStage"] {
+  return (
+    value === "submission" ||
+    value === "execution" ||
+    value === "execution_late" ||
+    value === "principal_review"
+  );
+}
+
+function buildSubmissionReviewNotificationMessage(
+  taskTitle: string,
+  outcome: CreateSubmissionReviewInput["reviewOutcome"]
+): string {
+  if (outcome === "ready_for_principal_approval") {
+    return `Submission review passed for ${taskTitle}. Ready for principal approval.`;
+  }
+
+  if (outcome === "needs_supplement") {
+    return `Submission review requires supplemental files for ${taskTitle}.`;
+  }
+
+  if (outcome === "needs_rework") {
+    return `Submission review requires content rework for ${taskTitle}.`;
+  }
+
+  if (outcome === "late_explanation_required") {
+    return `Submission review requires a late explanation for ${taskTitle}.`;
+  }
+
+  return `Submission review requests reassignment review for ${taskTitle}.`;
 }
 
 function mapAppUserProfileForResponse(user: AppUserProfile): AppUserProfile {

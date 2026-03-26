@@ -2,6 +2,12 @@ export type { TaskType } from "./task-type";
 export type { TaskStatus } from "./task-status";
 export type { Task } from "./task";
 export type { TaskResult } from "./task-result";
+export type { TaskExecutionStatus, TaskUpdate } from "./task-update";
+export type {
+  SubmissionReview,
+  SubmissionReviewOutcome,
+  SubmissionReturnStage
+} from "./submission-review";
 export type { AppUserRole } from "./app-user-role";
 export type { Department } from "./department";
 export type { AppUserProfile } from "./app-user-profile";

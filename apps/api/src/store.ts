@@ -1,7 +1,9 @@
 import type {
   Task,
   TaskResult,
-  TaskStatus
+  TaskStatus,
+  TaskUpdate,
+  TaskExecutionStatus
 } from "../../../packages/shared-types/index.js";
 import { getDbPool, handleStorageFailure } from "./db.js";
 import type { TaskAccessContext } from "./request-user.js";
@@ -42,6 +44,12 @@ export interface CreateTaskInput {
 export interface TaskListItem {
   task: Task;
   result?: TaskResult;
+}
+
+export interface CreateTaskUpdateInput {
+  executionStatus: TaskExecutionStatus;
+  progressPercent: number;
+  note?: string;
 }
 
 export async function listTasks(accessContext?: TaskAccessContext): Promise<Task[]> {
@@ -408,6 +416,90 @@ export async function deleteTaskWithAccess(
   return deletedInPostgres || deletedInMemory;
 }
 
+export async function listTaskUpdates(
+  taskId: string,
+  accessContext?: TaskAccessContext
+): Promise<TaskUpdate[]> {
+  const taskItem = await getTaskItemById(taskId, accessContext);
+
+  if (!taskItem) {
+    return [];
+  }
+
+  const result = await getDbPool().query(
+    `
+      SELECT
+        id,
+        task_id,
+        updated_by_user_id,
+        execution_status,
+        progress_percent,
+        note,
+        created_at
+      FROM task_updates
+      WHERE task_id = $1
+      ORDER BY created_at DESC
+    `,
+    [taskId]
+  );
+
+  return result.rows.map(mapTaskUpdateRow);
+}
+
+export async function createTaskUpdate(
+  taskId: string,
+  input: CreateTaskUpdateInput,
+  updatedByUserId: string,
+  accessContext?: TaskAccessContext
+): Promise<TaskUpdate | null> {
+  const taskItem = await getTaskItemById(taskId, accessContext);
+
+  if (!taskItem) {
+    return null;
+  }
+
+  const updateResult = await getDbPool().query(
+    `
+      INSERT INTO task_updates (
+        id,
+        task_id,
+        updated_by_user_id,
+        execution_status,
+        progress_percent,
+        note
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING
+        id,
+        task_id,
+        updated_by_user_id,
+        execution_status,
+        progress_percent,
+        note,
+        created_at
+    `,
+    [
+      createTaskUpdateId(taskId),
+      taskId,
+      updatedByUserId,
+      input.executionStatus,
+      input.progressPercent,
+      input.note ?? null
+    ]
+  );
+
+  const nextTaskStatus =
+    input.executionStatus === "pending"
+      ? "pending"
+      : "running";
+
+  await updateTaskAssignmentState(taskId, nextTaskStatus, {
+    progressPercent: input.progressPercent
+  });
+
+  return mapTaskUpdateRow(updateResult.rows[0]);
+}
+
 function createTaskId(): string {
   return `task_${Date.now()}`;
 }
@@ -660,6 +752,18 @@ function mapTaskResultRowToTaskResult(row: any): TaskResult {
   };
 }
 
+function mapTaskUpdateRow(row: any): TaskUpdate {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    updatedByUserId: row.updated_by_user_id ?? undefined,
+    executionStatus: row.execution_status,
+    progressPercent: Number(row.progress_percent ?? 0),
+    note: row.note ?? undefined,
+    createdAt: row.created_at
+  };
+}
+
 /**
  * task_results has its own database row ID, but the app-level TaskResult
  * shape does not expose that field yet.
@@ -668,6 +772,10 @@ function mapTaskResultRowToTaskResult(row: any): TaskResult {
  */
 function createTaskResultId(taskId: string): string {
   return `result_${taskId}`;
+}
+
+function createTaskUpdateId(taskId: string): string {
+  return `task_update_${taskId}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function upsertTaskInMemory(task: Task): void {

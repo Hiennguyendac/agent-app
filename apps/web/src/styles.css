@@ -690,6 +690,16 @@ h3 {
   color: #c7d2fe;
 }
 
+.status-waiting_assignment {
+  background: rgba(168, 85, 247, 0.16);
+  color: #e9d5ff;
+}
+
+.status-waiting_principal_approval {
+  background: rgba(16, 185, 129, 0.16);
+  color: #a7f3d0;
+}
+
 .status-ready {
   background: rgba(34, 197, 94, 0.16);
   color: #86efac;
@@ -697,7 +707,12 @@ h3 {
 
 .status-waiting_review,
 .status-in_review,
-.status-draft {
+.status-needs_supplement,
+.status-needs_rework,
+.status-late_explanation_required,
+.status-draft,
+.status-on_hold,
+.status-archived {
   background: rgba(59, 130, 246, 0.16);
   color: #bfdbfe;
 }

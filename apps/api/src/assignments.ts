@@ -23,6 +23,99 @@ export interface CreateAssignmentInput {
   createdByUserId: string;
 }
 
+export async function acceptAssignment(
+  assignmentId: string,
+  acceptedByUserId: string,
+  accessContext: TaskAccessContext
+): Promise<Assignment | null> {
+  const detail = await getAssignmentById(assignmentId, accessContext);
+
+  if (!detail) {
+    return null;
+  }
+
+  const result = await getDbPool().query(
+    `
+      UPDATE assignments
+      SET status = 'accepted',
+          accepted_at = NOW(),
+          accepted_by_user_id = $2,
+          adjustment_requested_at = NULL,
+          adjustment_requested_by_user_id = NULL,
+          adjustment_reason = NULL
+      WHERE id = $1
+      RETURNING
+        id,
+        work_item_id,
+        main_department_id,
+        coordinating_department_ids,
+        status,
+        deadline,
+        priority,
+        output_requirement,
+        note,
+        task_id,
+        created_by_user_id,
+        accepted_at,
+        accepted_by_user_id,
+        adjustment_requested_at,
+        adjustment_requested_by_user_id,
+        adjustment_reason,
+        created_at,
+        active
+    `,
+    [assignmentId, acceptedByUserId]
+  );
+
+  return result.rows.length > 0 ? mapAssignmentRow(result.rows[0]) : null;
+}
+
+export async function requestAssignmentAdjustment(
+  assignmentId: string,
+  requestedByUserId: string,
+  reason: string | null,
+  accessContext: TaskAccessContext
+): Promise<Assignment | null> {
+  const detail = await getAssignmentById(assignmentId, accessContext);
+
+  if (!detail) {
+    return null;
+  }
+
+  const result = await getDbPool().query(
+    `
+      UPDATE assignments
+      SET status = 'adjustment_requested',
+          adjustment_requested_at = NOW(),
+          adjustment_requested_by_user_id = $2,
+          adjustment_reason = $3
+      WHERE id = $1
+      RETURNING
+        id,
+        work_item_id,
+        main_department_id,
+        coordinating_department_ids,
+        status,
+        deadline,
+        priority,
+        output_requirement,
+        note,
+        task_id,
+        created_by_user_id,
+        accepted_at,
+        accepted_by_user_id,
+        adjustment_requested_at,
+        adjustment_requested_by_user_id,
+        adjustment_reason,
+        created_at,
+        active
+    `,
+    [assignmentId, requestedByUserId, reason]
+  );
+
+  return result.rows.length > 0 ? mapAssignmentRow(result.rows[0]) : null;
+}
+
 export async function createAssignment(
   input: CreateAssignmentInput
 ): Promise<Assignment> {
@@ -33,6 +126,7 @@ export async function createAssignment(
         work_item_id,
         main_department_id,
         coordinating_department_ids,
+        status,
         deadline,
         priority,
         output_requirement,
@@ -46,12 +140,18 @@ export async function createAssignment(
         work_item_id,
         main_department_id,
         coordinating_department_ids,
+        status,
         deadline,
         priority,
         output_requirement,
         note,
         task_id,
         created_by_user_id,
+        accepted_at,
+        accepted_by_user_id,
+        adjustment_requested_at,
+        adjustment_requested_by_user_id,
+        adjustment_reason,
         created_at,
         active
     `,
@@ -60,6 +160,7 @@ export async function createAssignment(
       input.workItemId,
       input.mainDepartmentId,
       input.coordinatingDepartmentIds ?? [],
+      "waiting_acceptance",
       input.deadline ?? null,
       input.priority,
       input.outputRequirement ?? null,
@@ -84,12 +185,18 @@ export async function getAssignmentById(
         a.work_item_id,
         a.main_department_id,
         a.coordinating_department_ids,
+        a.status,
         a.deadline,
         a.priority,
         a.output_requirement,
         a.note,
         a.task_id,
         a.created_by_user_id,
+        a.accepted_at,
+        a.accepted_by_user_id,
+        a.adjustment_requested_at,
+        a.adjustment_requested_by_user_id,
+        a.adjustment_reason,
         a.created_at,
         a.active
       FROM assignments a
@@ -128,12 +235,18 @@ export async function listAssignments(
         a.work_item_id,
         a.main_department_id,
         a.coordinating_department_ids,
+        a.status,
         a.deadline,
         a.priority,
         a.output_requirement,
         a.note,
         a.task_id,
         a.created_by_user_id,
+        a.accepted_at,
+        a.accepted_by_user_id,
+        a.adjustment_requested_at,
+        a.adjustment_requested_by_user_id,
+        a.adjustment_reason,
         a.created_at,
         a.active
       FROM assignments a
@@ -317,12 +430,28 @@ function mapAssignmentRow(row: Record<string, unknown>): Assignment {
     mainDepartmentId: row.main_department_id as string,
     coordinatingDepartmentIds:
       (row.coordinating_department_ids as string[] | null) ?? [],
+    status:
+      (row.status as
+        | "draft"
+        | "sent"
+        | "waiting_acceptance"
+        | "accepted"
+        | "adjustment_requested"
+        | "overdue"
+        | "closed") ?? "waiting_acceptance",
     deadline: (row.deadline as string | null) ?? undefined,
     priority: row.priority as AssignmentPriority,
     outputRequirement: (row.output_requirement as string | null) ?? undefined,
     note: (row.note as string | null) ?? undefined,
     taskId: row.task_id as string,
     createdByUserId: row.created_by_user_id as string,
+    acceptedAt: (row.accepted_at as string | null) ?? undefined,
+    acceptedByUserId: (row.accepted_by_user_id as string | null) ?? undefined,
+    adjustmentRequestedAt:
+      (row.adjustment_requested_at as string | null) ?? undefined,
+    adjustmentRequestedByUserId:
+      (row.adjustment_requested_by_user_id as string | null) ?? undefined,
+    adjustmentReason: (row.adjustment_reason as string | null) ?? undefined,
     createdAt: row.created_at as string,
     active: Boolean(row.active)
   };

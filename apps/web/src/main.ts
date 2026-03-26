@@ -9,7 +9,19 @@ import "./styles.css";
 type TaskType = "growth" | "school_workflow";
 type TaskStatus = "pending" | "running" | "completed" | "failed";
 type AppUserRole = "admin" | "principal" | "department_head" | "staff" | "clerk";
-type WorkItemStatus = "draft" | "waiting_review" | "assigned" | "in_review" | "completed";
+type WorkItemStatus =
+  | "draft"
+  | "waiting_review"
+  | "waiting_assignment"
+  | "assigned"
+  | "on_hold"
+  | "in_review"
+  | "needs_supplement"
+  | "needs_rework"
+  | "late_explanation_required"
+  | "waiting_principal_approval"
+  | "completed"
+  | "archived";
 type AssignmentPriority = "low" | "normal" | "high" | "urgent";
 type DocumentOcrStatus = "pending" | "ready" | "failed";
 
@@ -38,6 +50,49 @@ interface TaskResult {
   createdAt: string;
 }
 
+type TaskExecutionStatus =
+  | "pending"
+  | "running"
+  | "waiting_dependency"
+  | "needs_data"
+  | "internally_completed"
+  | "submitted";
+
+interface TaskUpdate {
+  id: string;
+  taskId: string;
+  updatedByUserId?: string;
+  executionStatus: TaskExecutionStatus;
+  progressPercent: number;
+  note?: string;
+  createdAt: string;
+}
+
+type SubmissionReviewOutcome =
+  | "needs_supplement"
+  | "needs_rework"
+  | "late_explanation_required"
+  | "needs_reassignment"
+  | "ready_for_principal_approval";
+
+type SubmissionReturnStage =
+  | "submission"
+  | "execution"
+  | "execution_late"
+  | "principal_review";
+
+interface SubmissionReview {
+  id: string;
+  taskId: string;
+  workItemId?: string;
+  reviewedByUserId?: string;
+  reviewOutcome: SubmissionReviewOutcome;
+  returnStage: SubmissionReturnStage;
+  reasonCode?: string;
+  reasonText?: string;
+  createdAt: string;
+}
+
 interface TaskListItem {
   task: Task;
   result?: TaskResult;
@@ -62,6 +117,14 @@ interface DeleteTaskResponse {
 
 interface SuccessResponse {
   success: boolean;
+}
+
+interface TaskUpdatesResponse {
+  updates: TaskUpdate[];
+}
+
+interface SubmissionReviewsResponse {
+  reviews: SubmissionReview[];
 }
 
 interface Department {
@@ -94,6 +157,14 @@ interface WorkItem {
   description: string;
   status: WorkItemStatus;
   departmentId?: string;
+  leadDepartmentId?: string;
+  coordinatingDepartmentIds: string[];
+  routingPriority?: AssignmentPriority;
+  outputRequirement?: string;
+  principalNote?: string;
+  principalDecision?: "assign" | "return_intake" | "hold";
+  principalReviewedAt?: string;
+  principalReviewedByUserId?: string;
   createdByUserId: string;
   assignedToUserId?: string;
   createdAt: string;
@@ -196,12 +267,25 @@ interface Assignment {
   workItemId: string;
   mainDepartmentId: string;
   coordinatingDepartmentIds: string[];
+  status:
+    | "draft"
+    | "sent"
+    | "waiting_acceptance"
+    | "accepted"
+    | "adjustment_requested"
+    | "overdue"
+    | "closed";
   deadline?: string;
   priority: AssignmentPriority;
   outputRequirement?: string;
   note?: string;
   taskId: string;
   createdByUserId: string;
+  acceptedAt?: string;
+  acceptedByUserId?: string;
+  adjustmentRequestedAt?: string;
+  adjustmentRequestedByUserId?: string;
+  adjustmentReason?: string;
   createdAt: string;
   active: boolean;
 }
@@ -270,6 +354,8 @@ let currentAssignments: Assignment[] = [];
 let currentSelectedTaskWorkItem: WorkItemListItem | null = null;
 let currentSelectedTaskDocument: DocumentListItem | null = null;
 let currentNotifications: Notification[] = [];
+let currentSelectedTaskUpdates: TaskUpdate[] = [];
+let currentSelectedTaskReviews: SubmissionReview[] = [];
 let currentView:
   | "overview"
   | "documents"
@@ -334,9 +420,9 @@ app.innerHTML = `
         <button class="nav-button" type="button" data-view="overview">Overview</button>
         <button class="nav-button" type="button" data-view="documents">Documents</button>
         <button class="nav-button" type="button" data-view="work-items">Work Items</button>
+        <button class="nav-button" type="button" data-view="approvals">Principal Review</button>
         <button class="nav-button" type="button" data-view="assignments">Assignments</button>
         <button class="nav-button" type="button" data-view="department-tasks">Department Tasks</button>
-        <button class="nav-button" type="button" data-view="approvals">Approvals</button>
         <button class="nav-button" type="button" data-view="reports">Reports</button>
         <button class="nav-button" type="button" data-view="admin">Admin</button>
         <button class="nav-button" type="button" data-view="account">Account</button>
@@ -558,15 +644,15 @@ app.innerHTML = `
         <div class="overview-grid">
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Approvals</p>
-              <h3>Approval Staging</h3>
+              <p class="eyebrow">Principal Review</p>
+              <h3>Items Waiting Principal Decision</h3>
             </div>
             <div id="approvals-queue" class="work-item-queue"></div>
           </section>
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Approvals</p>
-              <h3>Module Direction</h3>
+              <p class="eyebrow">Principal Review</p>
+              <h3>Decision Workspace</h3>
             </div>
             <div id="approvals-assignment-list" class="admin-list"></div>
           </section>
@@ -1594,6 +1680,7 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
             </span>
           </div>
           <p><strong>Department:</strong> ${escapeHtml(item.task.ownerDepartmentId ?? "none")}</p>
+          <p><strong>Assignment Status:</strong> ${escapeHtml(getAssignmentStatusForTask(item.task.assignmentId))}</p>
           <p><strong>Progress:</strong> ${escapeHtml(String(item.task.progressPercent ?? 0))}%</p>
           <p><strong>Linked Work Item:</strong> ${escapeHtml(item.task.workItemId ?? "none")}</p>
           <div class="auth-actions">
@@ -1619,7 +1706,7 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
                     type="button"
                     data-reject-assignment-task-id="${escapeHtml(item.task.id)}"
                   >
-                    Reject
+                    Request Adjustment
                   </button>
                 `
                 : ""
@@ -1861,6 +1948,26 @@ function bindTaskListInteractions(container: HTMLElement): void {
         );
       });
     });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-create-task-update-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleCreateTaskUpdate(
+          button.dataset.createTaskUpdateId ?? null
+        );
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-create-submission-review-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleCreateSubmissionReview(
+          button.dataset.createSubmissionReviewId ?? null
+        );
+      });
+    });
 }
 
 /**
@@ -1956,6 +2063,8 @@ function syncSelectedTaskDetail(taskItems: TaskListItem[]): void {
     selectedTaskId = null;
     currentSelectedTaskWorkItem = null;
     currentSelectedTaskDocument = null;
+    currentSelectedTaskUpdates = [];
+    currentSelectedTaskReviews = [];
     return;
   }
 
@@ -1970,6 +2079,8 @@ function syncSelectedTaskDetail(taskItems: TaskListItem[]): void {
     selectedTaskId = null;
     currentSelectedTaskWorkItem = null;
     currentSelectedTaskDocument = null;
+    currentSelectedTaskUpdates = [];
+    currentSelectedTaskReviews = [];
   }
 }
 
@@ -1977,7 +2088,45 @@ async function refreshSelectedTaskContext(): Promise<void> {
   if (!selectedTaskId) {
     currentSelectedTaskWorkItem = null;
     currentSelectedTaskDocument = null;
+    currentSelectedTaskUpdates = [];
+    currentSelectedTaskReviews = [];
     return;
+  }
+
+  try {
+    const updatesResponse = await fetch(
+      `/api/tasks/${encodeURIComponent(selectedTaskId)}/updates`,
+      {
+        headers: buildApiHeaders()
+      }
+    );
+
+    if (updatesResponse.ok) {
+      const updatesData = (await updatesResponse.json()) as TaskUpdatesResponse;
+      currentSelectedTaskUpdates = updatesData.updates;
+    } else {
+      currentSelectedTaskUpdates = [];
+    }
+  } catch {
+    currentSelectedTaskUpdates = [];
+  }
+
+  try {
+    const reviewsResponse = await fetch(
+      `/api/tasks/${encodeURIComponent(selectedTaskId)}/reviews`,
+      {
+        headers: buildApiHeaders()
+      }
+    );
+
+    if (reviewsResponse.ok) {
+      const reviewsData = (await reviewsResponse.json()) as SubmissionReviewsResponse;
+      currentSelectedTaskReviews = reviewsData.reviews;
+    } else {
+      currentSelectedTaskReviews = [];
+    }
+  } catch {
+    currentSelectedTaskReviews = [];
   }
 
   const selectedTask =
@@ -2198,6 +2347,10 @@ function renderTaskDetail(taskItem: TaskListItem): string {
           <p class="detail-value">${escapeHtml(taskItem.task.assignmentId ?? "none")}</p>
         </div>
         <div>
+          <p class="detail-label">Assignment State</p>
+          <p class="detail-value">${escapeHtml(getAssignmentStatusForTask(taskItem.task.assignmentId))}</p>
+        </div>
+        <div>
           <p class="detail-label">Progress</p>
           <p class="detail-value">${escapeHtml(String(taskItem.task.progressPercent ?? 0))}%</p>
         </div>
@@ -2260,6 +2413,48 @@ function renderTaskDetail(taskItem: TaskListItem): string {
       </div>
 
       <div class="task-output">
+        <p class="detail-label">Execution Update</p>
+        <div class="detail-value">
+          <p>Record progress, blockers, and internal completion milestones so the principal and agent can track execution history.</p>
+          <div class="admin-item-grid">
+            <div class="field">
+              <label for="task-update-status-${escapeHtml(taskItem.task.id)}">Execution status</label>
+              <select id="task-update-status-${escapeHtml(taskItem.task.id)}">
+                ${renderTaskExecutionStatusOptions("running")}
+              </select>
+            </div>
+            <div class="field">
+              <label for="task-update-progress-${escapeHtml(taskItem.task.id)}">Progress percent</label>
+              <input
+                id="task-update-progress-${escapeHtml(taskItem.task.id)}"
+                type="number"
+                min="0"
+                max="100"
+                value="${escapeHtml(String(taskItem.task.progressPercent ?? 0))}"
+              />
+            </div>
+            <div class="field">
+              <label for="task-update-note-${escapeHtml(taskItem.task.id)}">Update note</label>
+              <textarea
+                id="task-update-note-${escapeHtml(taskItem.task.id)}"
+                rows="2"
+                placeholder="Explain progress, blockers, or what was completed"
+              ></textarea>
+            </div>
+            <div class="auth-actions">
+              <button
+                class="secondary-button task-action-button"
+                type="button"
+                data-create-task-update-id="${escapeHtml(taskItem.task.id)}"
+              >
+                Save Execution Update
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="task-output">
         <p class="detail-label">Submit Response</p>
         <div class="detail-value">
           ${
@@ -2306,6 +2501,107 @@ function renderTaskDetail(taskItem: TaskListItem): string {
           }
         </div>
       </div>
+
+      <div class="task-output">
+        <p class="detail-label">Execution Timeline</p>
+        <div class="detail-value">
+          ${
+            currentSelectedTaskUpdates.length > 0
+              ? currentSelectedTaskUpdates
+                  .map(
+                    (update) => `
+                      <div class="admin-item">
+                        <div class="task-card-row">
+                          <strong>${escapeHtml(update.executionStatus)}</strong>
+                          <span>${escapeHtml(String(update.progressPercent))}%</span>
+                        </div>
+                        <p><strong>Updated:</strong> ${escapeHtml(formatDate(update.createdAt))}</p>
+                        <p><strong>By:</strong> ${escapeHtml(update.updatedByUserId ?? "system")}</p>
+                        <p>${escapeHtml(update.note ?? "No note")}</p>
+                      </div>
+                    `
+                  )
+                  .join("")
+              : "<p>No execution updates have been recorded yet.</p>"
+          }
+        </div>
+      </div>
+
+      ${
+        isAdminLikeSession() && taskItem.task.taskType === "school_workflow"
+          ? `
+            <div class="task-output">
+              <p class="detail-label">Submission Review</p>
+              <div class="detail-value">
+                <p>Classify the submitted response so it returns to the correct step instead of restarting the whole workflow.</p>
+                <div class="admin-item-grid">
+                  <div class="field">
+                    <label for="submission-review-outcome-${escapeHtml(taskItem.task.id)}">Review outcome</label>
+                    <select id="submission-review-outcome-${escapeHtml(taskItem.task.id)}">
+                      ${renderSubmissionReviewOutcomeOptions("needs_supplement")}
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="submission-review-stage-${escapeHtml(taskItem.task.id)}">Return stage</label>
+                    <select id="submission-review-stage-${escapeHtml(taskItem.task.id)}">
+                      ${renderSubmissionReturnStageOptions("submission")}
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="submission-review-reason-code-${escapeHtml(taskItem.task.id)}">Reason code</label>
+                    <input id="submission-review-reason-code-${escapeHtml(taskItem.task.id)}" type="text" placeholder="missing-attachment" />
+                  </div>
+                  <div class="field">
+                    <label for="submission-review-reason-text-${escapeHtml(taskItem.task.id)}">Reason detail</label>
+                    <textarea id="submission-review-reason-text-${escapeHtml(taskItem.task.id)}" rows="2" placeholder="Explain what is missing or what needs rework"></textarea>
+                  </div>
+                  <div class="auth-actions">
+                    <button
+                      class="secondary-button task-action-button"
+                      type="button"
+                      data-create-submission-review-id="${escapeHtml(taskItem.task.id)}"
+                    >
+                      Save Review Decision
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `
+          : ""
+      }
+
+      ${
+        isAdminLikeSession() && taskItem.task.taskType === "school_workflow"
+          ? `
+            <div class="task-output">
+              <p class="detail-label">Submission Review Timeline</p>
+              <div class="detail-value">
+                ${
+                  currentSelectedTaskReviews.length > 0
+                    ? currentSelectedTaskReviews
+                        .map(
+                          (review) => `
+                            <div class="admin-item">
+                              <div class="task-card-row">
+                                <strong>${escapeHtml(review.reviewOutcome)}</strong>
+                                <span>${escapeHtml(review.returnStage)}</span>
+                              </div>
+                              <p><strong>Reviewed:</strong> ${escapeHtml(formatDate(review.createdAt))}</p>
+                              <p><strong>By:</strong> ${escapeHtml(review.reviewedByUserId ?? "system")}</p>
+                              <p><strong>Reason code:</strong> ${escapeHtml(review.reasonCode ?? "none")}</p>
+                              <p>${escapeHtml(review.reasonText ?? "No explanation provided.")}</p>
+                            </div>
+                          `
+                        )
+                        .join("")
+                    : "<p>No submission review decisions have been recorded yet.</p>"
+                }
+              </div>
+            </div>
+          `
+          : ""
+      }
 
       <div class="task-output">
         <p class="detail-label">Operational Follow-up</p>
@@ -3984,9 +4280,11 @@ function renderAssignmentsList(assignments: Assignment[]): void {
             <span class="status-badge status-running">${escapeHtml(assignment.priority)}</span>
           </div>
           <p><strong>Main Department:</strong> ${escapeHtml(assignment.mainDepartmentId)}</p>
+          <p><strong>Status:</strong> ${escapeHtml(assignment.status)}</p>
           <p><strong>Task:</strong> ${escapeHtml(assignment.taskId)}</p>
           <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "none")}</p>
           <p><strong>Output:</strong> ${escapeHtml(assignment.outputRequirement ?? "none")}</p>
+          <p><strong>Adjustment Reason:</strong> ${escapeHtml(assignment.adjustmentReason ?? "none")}</p>
           <p><strong>Created:</strong> ${formatDate(assignment.createdAt)}</p>
           <div class="auth-actions">
             <button
@@ -4064,7 +4362,7 @@ function renderAssignmentQueue(): void {
   }
 
   const waitingItems = currentWorkItems.filter(
-    (item) => item.workItem.status === "waiting_review"
+    (item) => item.workItem.status === "waiting_assignment"
   );
 
   if (waitingItems.length === 0) {
@@ -4170,51 +4468,202 @@ function renderApprovalsQueue(): void {
   if (!isAdminLikeSession()) {
     approvalsQueue.innerHTML = `
       <div class="empty-state">
-        Approval tools are only available to principal or admin sessions.
+        Principal review is only available to principal or admin sessions.
       </div>
     `;
     approvalsAssignmentList.innerHTML = `
       <div class="empty-state">
-        Assignment oversight is limited to principal or admin sessions.
+        Principal review is limited to principal or admin sessions.
       </div>
     `;
     return;
   }
 
   const waitingItems = currentWorkItems.filter(
-    (item) => item.workItem.status === "waiting_review"
+    (item) =>
+      item.workItem.status === "waiting_review" ||
+      item.workItem.status === "draft"
   );
 
-  approvalsQueue.innerHTML = `
-    <article class="admin-item">
-      <p class="detail-label">Phase Direction</p>
-      <p class="detail-value">
-        The approval gate is reserved for a later phase. Right now this view acts as an operator-safe staging area so principal or admin users know which records are waiting for formal approval logic.
-      </p>
-      <p><strong>Waiting items:</strong> ${escapeHtml(String(waitingItems.length))}</p>
-      <p><strong>What works now:</strong> review queue visibility, assignment oversight, and quick jump into Work Items.</p>
-    </article>
-  `;
+  if (waitingItems.length === 0) {
+    approvalsQueue.innerHTML = `
+      <div class="empty-state">
+        No work items are currently waiting for principal review.
+      </div>
+    `;
+  } else {
+    approvalsQueue.innerHTML = waitingItems
+      .map(
+        (item) => `
+          <button
+            class="queue-item-button"
+            type="button"
+            data-principal-review-work-item-id="${escapeHtml(item.workItem.id)}"
+          >
+            <strong>${escapeHtml(item.workItem.title)}</strong>
+            <span>${escapeHtml(item.workItem.createdByUserId)}</span>
+          </button>
+        `
+      )
+      .join("");
+
+    approvalsQueue
+      .querySelectorAll<HTMLButtonElement>("[data-principal-review-work-item-id]")
+      .forEach((button) => {
+        button.addEventListener("click", async () => {
+          await selectWorkItemById(button.dataset.principalReviewWorkItemId ?? null);
+          renderPrincipalReviewWorkspace();
+        });
+      });
+  }
+
+  renderPrincipalReviewWorkspace();
+}
+
+function renderPrincipalReviewWorkspace(): void {
+  if (!isAdminLikeSession()) {
+    approvalsAssignmentList.innerHTML = `
+      <div class="empty-state">
+        Principal review is limited to principal or admin sessions.
+      </div>
+    `;
+    return;
+  }
+
+  if (!selectedWorkItemId) {
+    approvalsAssignmentList.innerHTML = `
+      <div class="empty-state">
+        Select an intake record from the queue to set the routing direction, lead department, and principal note.
+      </div>
+    `;
+    return;
+  }
+
+  const selectedItem = currentWorkItems.find(
+    (item) => item.workItem.id === selectedWorkItemId
+  );
+  const linkedDocument =
+    currentDocuments.find(
+      (documentItem) =>
+        documentItem.document.createdWorkItemId === selectedWorkItemId
+    ) ?? null;
+
+  if (!selectedItem) {
+    approvalsAssignmentList.innerHTML = `
+      <div class="empty-state">
+        The selected work item is no longer visible.
+      </div>
+    `;
+    return;
+  }
+
+  const currentDecision = selectedItem.workItem.principalDecision ?? "assign";
 
   approvalsAssignmentList.innerHTML = `
     <article class="admin-item">
-      <p class="detail-label">Current Scope</p>
-      <p class="detail-value">
-        This module is intentionally a placeholder with structure, not a broken empty screen. Formal approve/reject transitions can land in a later phase without confusing operators today.
-      </p>
+      <div class="task-card-row">
+        <strong>${escapeHtml(selectedItem.workItem.title)}</strong>
+        <span class="status-badge status-${escapeHtml(selectedItem.workItem.status)}">
+          ${escapeHtml(selectedItem.workItem.status)}
+        </span>
+      </div>
+      <p><strong>Description:</strong> ${escapeHtml(selectedItem.workItem.description)}</p>
+      <p><strong>Source document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+      <p><strong>Latest AI summary:</strong> ${escapeHtml(selectedItem.latestAnalysis?.summary ?? "No AI summary saved yet")}</p>
+      <div class="admin-item-grid">
+        <div class="field">
+          <label for="principal-decision">Principal decision</label>
+          <select id="principal-decision">
+            <option value="assign" ${currentDecision === "assign" ? "selected" : ""}>Prepare for assignment</option>
+            <option value="return_intake" ${currentDecision === "return_intake" ? "selected" : ""}>Return for intake completion</option>
+            <option value="hold" ${currentDecision === "hold" ? "selected" : ""}>Put on hold</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="principal-lead-department">Lead department</label>
+          <select id="principal-lead-department">
+            <option value="">Choose department</option>
+            ${currentDepartments
+              .map(
+                (department) => `
+                  <option
+                    value="${escapeHtml(department.id)}"
+                    ${department.id === (selectedItem.workItem.leadDepartmentId ?? selectedItem.workItem.departmentId ?? "") ? "selected" : ""}
+                  >
+                    ${escapeHtml(department.name)}
+                  </option>
+                `
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="principal-coordinating-departments">Coordinating departments</label>
+          <input
+            id="principal-coordinating-departments"
+            type="text"
+            value="${escapeHtml(selectedItem.workItem.coordinatingDepartmentIds.join(", "))}"
+            placeholder="dept_admin, dept_academic"
+          />
+        </div>
+        <div class="field">
+          <label for="principal-priority">Priority</label>
+          <select id="principal-priority">
+            ${renderAssignmentPriorityOptions(selectedItem.workItem.routingPriority ?? "normal")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="principal-output-requirement">Output requirement</label>
+          <textarea id="principal-output-requirement" rows="2" placeholder="Required report or deliverable">${escapeHtml(
+            selectedItem.workItem.outputRequirement ?? ""
+          )}</textarea>
+        </div>
+        <div class="field">
+          <label for="principal-note">Principal note</label>
+          <textarea id="principal-note" rows="2" placeholder="Routing instruction or intake note">${escapeHtml(
+            selectedItem.workItem.principalNote ?? ""
+          )}</textarea>
+        </div>
+      </div>
       <div class="auth-actions">
-        <button class="secondary-button" type="button" data-view="assignments">Go To Assignments</button>
+        <button id="save-principal-review-button" class="primary-button" type="button">
+          Save Principal Decision
+        </button>
+        <button id="open-principal-review-work-item-button" class="secondary-button" type="button">
+          Open Work Item
+        </button>
+        ${
+          selectedItem.workItem.status === "waiting_assignment"
+            ? `
+              <button id="go-to-assignment-queue-button" class="secondary-button" type="button">
+                Go To Assignment Queue
+              </button>
+            `
+            : ""
+        }
       </div>
     </article>
   `;
 
   approvalsAssignmentList
-    .querySelectorAll<HTMLButtonElement>("[data-view]")
-    .forEach((button) => {
-      button.addEventListener("click", () => {
-        currentView = "assignments";
-        renderCurrentView();
-      });
+    .querySelector<HTMLButtonElement>("#save-principal-review-button")
+    ?.addEventListener("click", async () => {
+      await handlePrincipalReview(selectedItem.workItem.id);
+    });
+
+  approvalsAssignmentList
+    .querySelector<HTMLButtonElement>("#open-principal-review-work-item-button")
+    ?.addEventListener("click", async () => {
+      currentView = "work-items";
+      renderCurrentView();
+      await selectWorkItemById(selectedItem.workItem.id);
+    });
+
+  approvalsAssignmentList
+    .querySelector<HTMLButtonElement>("#go-to-assignment-queue-button")
+    ?.addEventListener("click", () => {
+      currentView = "assignments";
+      renderCurrentView();
     });
 }
 
@@ -4229,13 +4678,15 @@ function renderOverview(): void {
   ).length;
   const newCount = currentWorkItems.filter((item) => item.workItem.status === "draft").length;
   const assignedCount = currentWorkItems.filter(
-    (item) => item.workItem.status === "assigned"
+    (item) =>
+      item.workItem.status === "assigned" ||
+      item.workItem.status === "waiting_assignment"
   ).length;
   const inProgressCount = currentTaskItems.filter(
     (item) => item.task.status === "running"
   ).length;
   const waitingApprovalCount = currentWorkItems.filter(
-    (item) => item.workItem.status === "waiting_review"
+    (item) => item.workItem.status === "in_review"
   ).length;
   const overdueCount = currentAssignments.filter((assignment) => {
     if (!assignment.deadline) {
@@ -4460,6 +4911,7 @@ async function selectWorkItemById(workItemId: string | null): Promise<void> {
 
     renderWorkItemList(currentWorkItems);
     renderAssignmentWorkspace();
+    renderPrincipalReviewWorkspace();
     renderWorkItemDetail(detail);
   } catch (error: unknown) {
     setStatus(
@@ -4563,6 +5015,14 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
           )}</p>
         </div>
         <div>
+          <p class="detail-label">Lead Department</p>
+          <p class="detail-value">${escapeHtml(item.workItem.leadDepartmentId ?? "none")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Routing Priority</p>
+          <p class="detail-value">${escapeHtml(item.workItem.routingPriority ?? "none")}</p>
+        </div>
+        <div>
           <p class="detail-label">Source Document</p>
           <p class="detail-value">${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
         </div>
@@ -4599,7 +5059,8 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                   Open Linked Task
                 </button>
                 ${
-                  isAdminLikeSession() && item.workItem.status === "in_review"
+                  isAdminLikeSession() &&
+                  item.workItem.status === "waiting_principal_approval"
                     ? `
                       <button
                         id="approve-response-button"
@@ -4694,6 +5155,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                 <input
                   id="assignment-coordinating-departments"
                   type="text"
+                  value="${escapeHtml(item.workItem.coordinatingDepartmentIds.join(", "))}"
                   placeholder="dept_admin, dept_academic"
                 />
               </div>
@@ -4704,16 +5166,20 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
               <div class="field">
                 <label for="assignment-priority">Priority</label>
                 <select id="assignment-priority">
-                  ${renderAssignmentPriorityOptions("normal")}
+                  ${renderAssignmentPriorityOptions(item.workItem.routingPriority ?? "normal")}
                 </select>
               </div>
               <div class="field">
                 <label for="assignment-output-requirement">Output requirement</label>
-                <textarea id="assignment-output-requirement" rows="2" placeholder="Expected report or deliverable"></textarea>
+                <textarea id="assignment-output-requirement" rows="2" placeholder="Expected report or deliverable">${escapeHtml(
+                  item.workItem.outputRequirement ?? ""
+                )}</textarea>
               </div>
               <div class="field">
                 <label for="assignment-note">Note</label>
-                <textarea id="assignment-note" rows="2" placeholder="Assignment note"></textarea>
+                <textarea id="assignment-note" rows="2" placeholder="Assignment note">${escapeHtml(
+                  item.workItem.principalNote ?? ""
+                )}</textarea>
               </div>
               <div class="auth-actions">
                 <button id="assign-work-item-button" class="secondary-button" type="button">
@@ -4803,9 +5269,16 @@ function renderWorkItemStatusOptions(selectedStatus: WorkItemStatus): string {
   const statuses: WorkItemStatus[] = [
     "draft",
     "waiting_review",
+    "waiting_assignment",
     "assigned",
+    "on_hold",
     "in_review",
-    "completed"
+    "needs_supplement",
+    "needs_rework",
+    "late_explanation_required",
+    "waiting_principal_approval",
+    "completed",
+    "archived"
   ];
 
   return statuses
@@ -4829,6 +5302,72 @@ function renderAssignmentPriorityOptions(
       (priority) => `
         <option value="${escapeHtml(priority)}" ${priority === selectedPriority ? "selected" : ""}>
           ${escapeHtml(priority)}
+        </option>
+      `
+    )
+    .join("");
+}
+
+function renderTaskExecutionStatusOptions(
+  selectedStatus: TaskExecutionStatus
+): string {
+  const statuses: TaskExecutionStatus[] = [
+    "pending",
+    "running",
+    "waiting_dependency",
+    "needs_data",
+    "internally_completed",
+    "submitted"
+  ];
+
+  return statuses
+    .map(
+      (status) => `
+        <option value="${escapeHtml(status)}" ${status === selectedStatus ? "selected" : ""}>
+          ${escapeHtml(status)}
+        </option>
+      `
+    )
+    .join("");
+}
+
+function renderSubmissionReviewOutcomeOptions(
+  selectedOutcome: SubmissionReviewOutcome
+): string {
+  const outcomes: SubmissionReviewOutcome[] = [
+    "needs_supplement",
+    "needs_rework",
+    "late_explanation_required",
+    "needs_reassignment",
+    "ready_for_principal_approval"
+  ];
+
+  return outcomes
+    .map(
+      (outcome) => `
+        <option value="${escapeHtml(outcome)}" ${outcome === selectedOutcome ? "selected" : ""}>
+          ${escapeHtml(outcome)}
+        </option>
+      `
+    )
+    .join("");
+}
+
+function renderSubmissionReturnStageOptions(
+  selectedStage: SubmissionReturnStage
+): string {
+  const stages: SubmissionReturnStage[] = [
+    "submission",
+    "execution",
+    "execution_late",
+    "principal_review"
+  ];
+
+  return stages
+    .map(
+      (stage) => `
+        <option value="${escapeHtml(stage)}" ${stage === selectedStage ? "selected" : ""}>
+          ${escapeHtml(stage)}
         </option>
       `
     )
@@ -4969,6 +5508,102 @@ async function handleAssignWorkItem(workItemId: string): Promise<void> {
   }
 }
 
+async function handlePrincipalReview(workItemId: string): Promise<void> {
+  const decisionInput =
+    approvalsAssignmentList.querySelector<HTMLSelectElement>("#principal-decision");
+  const leadDepartmentInput =
+    approvalsAssignmentList.querySelector<HTMLSelectElement>(
+      "#principal-lead-department"
+    );
+  const coordinatingDepartmentsInput =
+    approvalsAssignmentList.querySelector<HTMLInputElement>(
+      "#principal-coordinating-departments"
+    );
+  const priorityInput =
+    approvalsAssignmentList.querySelector<HTMLSelectElement>("#principal-priority");
+  const outputRequirementInput =
+    approvalsAssignmentList.querySelector<HTMLTextAreaElement>(
+      "#principal-output-requirement"
+    );
+  const principalNoteInput =
+    approvalsAssignmentList.querySelector<HTMLTextAreaElement>("#principal-note");
+
+  if (
+    !decisionInput ||
+    !leadDepartmentInput ||
+    !coordinatingDepartmentsInput ||
+    !priorityInput ||
+    !outputRequirementInput ||
+    !principalNoteInput
+  ) {
+    return;
+  }
+
+  if (
+    decisionInput.value === "assign" &&
+    leadDepartmentInput.value.trim().length === 0
+  ) {
+    setStatus(
+      "Lead department is required when preparing a work item for assignment.",
+      "error"
+    );
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/work-items/${encodeURIComponent(workItemId)}/principal-review`,
+      {
+        method: "POST",
+        headers: buildApiHeaders({
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+          decision: decisionInput.value,
+          leadDepartmentId: leadDepartmentInput.value.trim() || undefined,
+          coordinatingDepartmentIds: coordinatingDepartmentsInput.value
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean),
+          priority: priorityInput.value,
+          outputRequirement: outputRequirementInput.value.trim() || undefined,
+          principalNote: principalNoteInput.value.trim() || undefined
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(
+          response,
+          "The API could not save the principal review decision"
+        )
+      );
+    }
+
+    await loadWorkItems();
+    await loadNotifications();
+    await selectWorkItemById(workItemId);
+    renderApprovalsQueue();
+    renderAssignmentsList(currentAssignments);
+    setStatus(
+      decisionInput.value === "assign"
+        ? "Principal decision saved. Work item is ready for assignment."
+        : decisionInput.value === "hold"
+          ? "Principal decision saved. Work item is now on hold."
+          : "Principal decision saved. Work item was returned for intake completion.",
+      "success"
+    );
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while saving the principal review decision.",
+      "error"
+    );
+  }
+}
+
 async function handleUploadWorkItemFile(
   workItemId: string,
   input: HTMLInputElement
@@ -5065,6 +5700,7 @@ async function handleAcceptAssignmentTask(taskId: string | null): Promise<void> 
     }
 
     await loadTasks();
+    await loadAssignments();
     await loadNotifications();
     await focusTaskById(taskId);
     setStatus("Assignment accepted.", "success");
@@ -5078,15 +5714,38 @@ async function handleAcceptAssignmentTask(taskId: string | null): Promise<void> 
   }
 }
 
+function getAssignmentStatusForTask(assignmentId: string | undefined): string {
+  if (!assignmentId) {
+    return "none";
+  }
+
+  const assignment = currentAssignments.find((item) => item.id === assignmentId);
+  return assignment?.status ?? "unknown";
+}
+
 async function handleRejectAssignmentTask(taskId: string | null): Promise<void> {
   if (!taskId) {
+    return;
+  }
+
+  const reason = window.prompt(
+    "Explain why this assignment needs adjustment before the principal re-routes it:",
+    ""
+  );
+
+  if (reason === null) {
     return;
   }
 
   try {
     const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/reject-assignment`, {
       method: "POST",
-      headers: buildApiHeaders()
+      headers: buildApiHeaders({
+        "Content-Type": "application/json"
+      }),
+      body: JSON.stringify({
+        reason: reason.trim() || undefined
+      })
     });
 
     if (!response.ok) {
@@ -5096,9 +5755,10 @@ async function handleRejectAssignmentTask(taskId: string | null): Promise<void> 
     }
 
     await loadTasks();
+    await loadAssignments();
     await loadNotifications();
     hideDepartmentTaskDetail();
-    setStatus("Assignment rejected.", "success");
+    setStatus("Adjustment request sent back to the principal review flow.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
@@ -5174,6 +5834,132 @@ async function handleApproveTaskResponse(taskId: string | null): Promise<void> {
       error instanceof Error
         ? error.message
         : "Something went wrong while approving the response.",
+      "error"
+    );
+  }
+}
+
+async function handleCreateTaskUpdate(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  const statusInput = document.querySelector<HTMLSelectElement>(
+    `#task-update-status-${CSS.escape(taskId)}`
+  );
+  const progressInput = document.querySelector<HTMLInputElement>(
+    `#task-update-progress-${CSS.escape(taskId)}`
+  );
+  const noteInput = document.querySelector<HTMLTextAreaElement>(
+    `#task-update-note-${CSS.escape(taskId)}`
+  );
+
+  if (!statusInput || !progressInput || !noteInput) {
+    return;
+  }
+
+  const progressValue = Number(progressInput.value);
+
+  if (
+    Number.isNaN(progressValue) ||
+    progressValue < 0 ||
+    progressValue > 100
+  ) {
+    setStatus("Progress percent must be between 0 and 100.", "error");
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/updates`,
+      {
+        method: "POST",
+        headers: buildApiHeaders({
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+          executionStatus: statusInput.value,
+          progressPercent: progressValue,
+          note: noteInput.value.trim() || undefined
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not save the execution update")
+      );
+    }
+
+    await loadTasks();
+    await loadNotifications();
+    await focusTaskById(taskId);
+    setStatus("Execution update saved.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while saving the execution update.",
+      "error"
+    );
+  }
+}
+
+async function handleCreateSubmissionReview(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  const outcomeInput = document.querySelector<HTMLSelectElement>(
+    `#submission-review-outcome-${CSS.escape(taskId)}`
+  );
+  const stageInput = document.querySelector<HTMLSelectElement>(
+    `#submission-review-stage-${CSS.escape(taskId)}`
+  );
+  const reasonCodeInput = document.querySelector<HTMLInputElement>(
+    `#submission-review-reason-code-${CSS.escape(taskId)}`
+  );
+  const reasonTextInput = document.querySelector<HTMLTextAreaElement>(
+    `#submission-review-reason-text-${CSS.escape(taskId)}`
+  );
+
+  if (!outcomeInput || !stageInput || !reasonCodeInput || !reasonTextInput) {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/reviews`,
+      {
+        method: "POST",
+        headers: buildApiHeaders({
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+          reviewOutcome: outcomeInput.value,
+          returnStage: stageInput.value,
+          reasonCode: reasonCodeInput.value.trim() || undefined,
+          reasonText: reasonTextInput.value.trim() || undefined
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The API could not save the submission review")
+      );
+    }
+
+    await loadTasks();
+    await loadWorkItems();
+    await loadNotifications();
+    await focusTaskById(taskId);
+    setStatus("Submission review saved.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while saving the submission review.",
       "error"
     );
   }
@@ -5368,7 +6154,7 @@ function renderCurrentView(): void {
     assignments: {
       eyebrow: "Assignments",
       title: "Assignment Tracking",
-      description: "Review assignment records and jump into linked work items or department tasks."
+      description: "Review work items that are already approved for assignment and create the formal department handoff."
     },
     "department-tasks": {
       eyebrow: "Department Tasks",
@@ -5376,9 +6162,9 @@ function renderCurrentView(): void {
       description: "Review the current department task queue and accept or reject assignments quickly."
     },
     approvals: {
-      eyebrow: "Approvals",
-      title: "Principal Assignment Queue",
-      description: "Review work items waiting assignment and inspect the current assignment portfolio."
+      eyebrow: "Principal Review",
+      title: "Principal Routing Workspace",
+      description: "Review intake, choose the routing direction, and prepare work items for formal assignment."
     },
     reports: {
       eyebrow: "Reports",

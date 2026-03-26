@@ -28,6 +28,15 @@ export interface UpdateWorkItemInput {
   status?: WorkItemStatus;
 }
 
+export interface ReviewWorkItemInput {
+  decision: "assign" | "return_intake" | "hold";
+  leadDepartmentId?: string | null;
+  coordinatingDepartmentIds?: string[];
+  priority?: "low" | "normal" | "high" | "urgent";
+  outputRequirement?: string | null;
+  principalNote?: string | null;
+}
+
 export interface CreateWorkItemFileInput {
   filename: string;
   contentType?: string;
@@ -89,6 +98,14 @@ export async function listWorkItems(
         w.description,
         w.status,
         w.department_id,
+        w.lead_department_id,
+        w.coordinating_department_ids,
+        w.routing_priority,
+        w.output_requirement,
+        w.principal_note,
+        w.principal_decision,
+        w.principal_reviewed_at,
+        w.principal_reviewed_by_user_id,
         w.created_by_user_id,
         w.assigned_to_user_id,
         w.created_at,
@@ -130,6 +147,14 @@ export async function getWorkItemById(
         w.description,
         w.status,
         w.department_id,
+        w.lead_department_id,
+        w.coordinating_department_ids,
+        w.routing_priority,
+        w.output_requirement,
+        w.principal_note,
+        w.principal_decision,
+        w.principal_reviewed_at,
+        w.principal_reviewed_by_user_id,
         w.created_by_user_id,
         w.assigned_to_user_id,
         w.created_at,
@@ -191,6 +216,14 @@ export async function updateWorkItem(
         description,
         status,
         department_id,
+        lead_department_id,
+        coordinating_department_ids,
+        routing_priority,
+        output_requirement,
+        principal_note,
+        principal_decision,
+        principal_reviewed_at,
+        principal_reviewed_by_user_id,
         created_by_user_id,
         assigned_to_user_id,
         created_at,
@@ -205,6 +238,81 @@ export async function updateWorkItem(
         : input.departmentId,
       nextAssignedToUserId,
       nextStatus
+    ]
+  );
+
+  return result.rows.length > 0 ? mapWorkItemRow(result.rows[0]) : null;
+}
+
+export async function reviewWorkItem(
+  workItemId: string,
+  input: ReviewWorkItemInput,
+  reviewedByUserId: string,
+  accessContext: TaskAccessContext
+): Promise<WorkItem | null> {
+  const existing = await getWorkItemById(workItemId, accessContext);
+
+  if (!existing) {
+    return null;
+  }
+
+  const nextStatus: WorkItemStatus =
+    input.decision === "assign"
+      ? "waiting_assignment"
+      : input.decision === "hold"
+        ? "on_hold"
+        : "draft";
+
+  const nextDepartmentId =
+    input.decision === "assign"
+      ? input.leadDepartmentId ?? existing.workItem.departmentId ?? null
+      : existing.workItem.departmentId ?? null;
+
+  const result = await getDbPool().query(
+    `
+      UPDATE work_items
+      SET status = $2,
+          department_id = $3,
+          lead_department_id = $4,
+          coordinating_department_ids = $5,
+          routing_priority = $6,
+          output_requirement = $7,
+          principal_note = $8,
+          principal_decision = $9,
+          principal_reviewed_at = NOW(),
+          principal_reviewed_by_user_id = $10,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING
+        id,
+        title,
+        description,
+        status,
+        department_id,
+        lead_department_id,
+        coordinating_department_ids,
+        routing_priority,
+        output_requirement,
+        principal_note,
+        principal_decision,
+        principal_reviewed_at,
+        principal_reviewed_by_user_id,
+        created_by_user_id,
+        assigned_to_user_id,
+        created_at,
+        updated_at
+    `,
+    [
+      workItemId,
+      nextStatus,
+      nextDepartmentId,
+      input.leadDepartmentId ?? null,
+      input.coordinatingDepartmentIds ?? [],
+      input.priority ?? null,
+      input.outputRequirement ?? null,
+      input.principalNote ?? null,
+      input.decision,
+      reviewedByUserId
     ]
   );
 
@@ -458,6 +566,28 @@ function mapWorkItemRow(row: Record<string, unknown>): WorkItem {
     description: row.description as string,
     status: row.status as WorkItemStatus,
     departmentId: (row.department_id as string | null) ?? undefined,
+    leadDepartmentId: (row.lead_department_id as string | null) ?? undefined,
+    coordinatingDepartmentIds:
+      (row.coordinating_department_ids as string[] | null) ?? [],
+    routingPriority:
+      (row.routing_priority as
+        | "low"
+        | "normal"
+        | "high"
+        | "urgent"
+        | null) ?? undefined,
+    outputRequirement: (row.output_requirement as string | null) ?? undefined,
+    principalNote: (row.principal_note as string | null) ?? undefined,
+    principalDecision:
+      (row.principal_decision as
+        | "assign"
+        | "return_intake"
+        | "hold"
+        | null) ?? undefined,
+    principalReviewedAt:
+      (row.principal_reviewed_at as string | null) ?? undefined,
+    principalReviewedByUserId:
+      (row.principal_reviewed_by_user_id as string | null) ?? undefined,
     createdByUserId: row.created_by_user_id as string,
     assignedToUserId: (row.assigned_to_user_id as string | null) ?? undefined,
     createdAt: row.created_at as string,
