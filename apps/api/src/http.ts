@@ -79,6 +79,7 @@ import {
   analyzeWorkItem,
   canCreateWorkItems,
   createWorkItem,
+  getWorkItemFileDownload,
   getWorkItemById,
   listWorkItems,
   markWorkItemAssigned,
@@ -95,6 +96,7 @@ import {
   canCreateDocuments,
   createDocument,
   createWorkItemFromDocument,
+  getDocumentDownloadFile,
   getDocumentById,
   listDocuments,
   type CreateDocumentInput
@@ -134,10 +136,12 @@ export async function handleRequest(
   const assignmentUserId = getUserAssignmentIdFromUrl(url);
   const workItemId = getWorkItemIdFromUrl(url);
   const workItemFileTargetId = getWorkItemFileTargetIdFromUrl(url);
+  const workItemFileDownloadTarget = getWorkItemFileDownloadTargetFromUrl(url);
   const workItemAnalyzeTargetId = getWorkItemAnalyzeTargetIdFromUrl(url);
   const workItemReviewTargetId = getWorkItemReviewTargetIdFromUrl(url);
   const workItemAssignTargetId = getWorkItemAssignTargetIdFromUrl(url);
   const documentId = getDocumentIdFromUrl(url);
+  const documentDownloadTargetId = getDocumentDownloadTargetIdFromUrl(url);
   const documentAnalyzeTargetId = getDocumentAnalyzeTargetIdFromUrl(url);
   const documentCreateWorkItemTargetId =
     getDocumentCreateWorkItemTargetIdFromUrl(url);
@@ -947,6 +951,7 @@ export async function handleRequest(
     (method === "POST" && url === "/documents") ||
     (method === "GET" && url === "/documents") ||
     (method === "GET" && documentId !== null) ||
+    (method === "GET" && documentDownloadTargetId !== null) ||
     (method === "POST" && documentAnalyzeTargetId !== null) ||
     (method === "POST" && documentCreateWorkItemTargetId !== null) ||
     (method === "POST" && url === "/work-items") ||
@@ -954,6 +959,7 @@ export async function handleRequest(
     (method === "GET" && workItemId !== null) ||
     (method === "PATCH" && workItemId !== null) ||
     (method === "POST" && workItemFileTargetId !== null) ||
+    (method === "GET" && workItemFileDownloadTarget !== null) ||
     (method === "POST" && workItemAnalyzeTargetId !== null) ||
     (method === "POST" && workItemReviewTargetId !== null) ||
     (method === "POST" && workItemAssignTargetId !== null) ||
@@ -1147,6 +1153,47 @@ export async function handleRequest(
       {
         userId: accessContext.userId,
         documentId
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && documentDownloadTargetId) {
+    const file = await getDocumentDownloadFile(
+      documentDownloadTargetId,
+      accessContext
+    );
+
+    if (!file) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Document file not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          documentId: documentDownloadTargetId
+        }
+      );
+      return;
+    }
+
+    sendBinary(
+      res,
+      200,
+      file.content,
+      file.contentType,
+      file.filename,
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        documentId: documentDownloadTargetId
       }
     );
     return;
@@ -1511,6 +1558,48 @@ export async function handleRequest(
       {
         userId: accessContext.userId,
         workItemId: workItemFileTargetId
+      }
+    );
+    return;
+  }
+
+  if (method === "GET" && workItemFileDownloadTarget) {
+    const file = await getWorkItemFileDownload(
+      workItemFileDownloadTarget.workItemId,
+      workItemFileDownloadTarget.fileId,
+      accessContext
+    );
+
+    if (!file) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Work item file not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemFileDownloadTarget.workItemId
+        }
+      );
+      return;
+    }
+
+    sendBinary(
+      res,
+      200,
+      file.content,
+      file.contentType,
+      file.filename,
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        workItemId: workItemFileDownloadTarget.workItemId
       }
     );
     return;
@@ -2818,6 +2907,11 @@ function getDocumentIdFromUrl(url: string): string | null {
   return match?.[1] ?? null;
 }
 
+function getDocumentDownloadTargetIdFromUrl(url: string): string | null {
+  const match = /^\/documents\/([^/]+)\/download$/.exec(url);
+  return match?.[1] ?? null;
+}
+
 function getDocumentAnalyzeTargetIdFromUrl(url: string): string | null {
   const match = /^\/documents\/([^/]+)\/analyze$/.exec(url);
   return match?.[1] ?? null;
@@ -2831,6 +2925,21 @@ function getDocumentCreateWorkItemTargetIdFromUrl(url: string): string | null {
 function getWorkItemFileTargetIdFromUrl(url: string): string | null {
   const match = /^\/work-items\/([^/]+)\/files$/.exec(url);
   return match?.[1] ?? null;
+}
+
+function getWorkItemFileDownloadTargetFromUrl(
+  url: string
+): { workItemId: string; fileId: string } | null {
+  const match = /^\/work-items\/([^/]+)\/files\/([^/]+)\/download$/.exec(url);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    workItemId: match[1],
+    fileId: match[2]
+  };
 }
 
 function getWorkItemAnalyzeTargetIdFromUrl(url: string): string | null {
@@ -3514,6 +3623,10 @@ function getCreateWorkItemFileInputError(body: unknown): string | null {
     return "Field 'contentText' must be a string if provided";
   }
 
+  if (input.contentBase64 !== undefined && typeof input.contentBase64 !== "string") {
+    return "Field 'contentBase64' must be a string if provided";
+  }
+
   return null;
 }
 
@@ -4012,6 +4125,29 @@ function sendJson(
     ...extraHeaders
   });
   res.end(JSON.stringify(payload, null, 2));
+
+  if (startedAtMs !== undefined && method && path) {
+    logRequest(method, path, statusCode, startedAtMs, metadata);
+  }
+}
+
+function sendBinary(
+  res: ServerResponse,
+  statusCode: number,
+  payload: Buffer,
+  contentType: string,
+  filename: string,
+  startedAtMs?: number,
+  method?: string,
+  path?: string,
+  metadata?: Record<string, unknown>
+): void {
+  res.writeHead(statusCode, {
+    "Content-Type": contentType,
+    "Content-Length": String(payload.length),
+    "Content-Disposition": `attachment; filename="${filename.replaceAll("\"", "")}"`
+  });
+  res.end(payload);
 
   if (startedAtMs !== undefined && method && path) {
     logRequest(method, path, statusCode, startedAtMs, metadata);

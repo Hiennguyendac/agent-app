@@ -4,6 +4,7 @@ export interface WorkItemFile {
   filename: string;
   contentType?: string;
   sizeBytes?: number;
+  hasFileContent?: boolean;
   uploadedByUserId?: string;
   createdAt: string;
 }

@@ -24,6 +24,12 @@ export interface CreateDocumentInput {
   ocrStatus?: "pending" | "ready" | "failed";
 }
 
+export interface DownloadableDocumentFile {
+  filename: string;
+  contentType: string;
+  content: Buffer;
+}
+
 export async function createDocument(
   input: CreateDocumentInput,
   uploadedByUserId: string
@@ -57,10 +63,11 @@ export async function createDocument(
         size_bytes,
         metadata_json,
         extracted_text,
+        content_base64,
         ocr_status,
         uploaded_by_user_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING
         id,
         filename,
@@ -68,6 +75,7 @@ export async function createDocument(
         size_bytes,
         metadata_json,
         extracted_text,
+        content_base64,
         ocr_status,
         uploaded_by_user_id,
         created_work_item_id,
@@ -80,6 +88,7 @@ export async function createDocument(
       input.sizeBytes ?? null,
       JSON.stringify(sanitizedMetadata),
       extractionResult.extractedText ?? sanitizedExtractedText,
+      input.contentBase64 ?? null,
       extractionResult.ocrStatus ?? input.ocrStatus ?? "ready",
       uploadedByUserId
     ]
@@ -101,6 +110,7 @@ export async function listDocuments(
         d.size_bytes,
         d.metadata_json,
         d.extracted_text,
+        d.content_base64,
         d.ocr_status,
         d.uploaded_by_user_id,
         d.created_work_item_id,
@@ -140,6 +150,7 @@ export async function getDocumentById(
         d.size_bytes,
         d.metadata_json,
         d.extracted_text,
+        d.content_base64,
         d.ocr_status,
         d.uploaded_by_user_id,
         d.created_work_item_id,
@@ -234,6 +245,7 @@ export async function createWorkItemFromDocument(
         size_bytes,
         metadata_json,
         extracted_text,
+        content_base64,
         ocr_status,
         uploaded_by_user_id,
         created_work_item_id,
@@ -246,6 +258,60 @@ export async function createWorkItemFromDocument(
     document: mapDocumentRow(result.rows[0]),
     workItem
   };
+}
+
+export async function getDocumentDownloadFile(
+  documentId: string,
+  accessContext: TaskAccessContext
+): Promise<DownloadableDocumentFile | null> {
+  const detail = await getDocumentById(documentId, accessContext);
+
+  if (!detail) {
+    return null;
+  }
+
+  const result = await getDbPool().query(
+    `
+      SELECT
+        filename,
+        content_type,
+        content_base64,
+        extracted_text
+      FROM documents
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [documentId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const row = result.rows[0] as {
+    filename: string;
+    content_type?: string | null;
+    content_base64?: string | null;
+    extracted_text?: string | null;
+  };
+
+  if (typeof row.content_base64 === "string" && row.content_base64.length > 0) {
+    return {
+      filename: row.filename,
+      contentType: row.content_type ?? "application/octet-stream",
+      content: Buffer.from(row.content_base64, "base64")
+    };
+  }
+
+  if (typeof row.extracted_text === "string" && row.extracted_text.length > 0) {
+    return {
+      filename: buildTextFallbackFilename(row.filename),
+      contentType: "text/plain; charset=utf-8",
+      content: Buffer.from(row.extracted_text, "utf8")
+    };
+  }
+
+  return null;
 }
 
 export async function canCreateDocuments(
@@ -345,6 +411,9 @@ function mapDocumentRow(row: Record<string, unknown>): Document {
         : {},
     extractedText:
       typeof row.extracted_text === "string" ? row.extracted_text : undefined,
+    hasFileContent:
+      (typeof row.content_base64 === "string" && row.content_base64.length > 0) ||
+      (typeof row.extracted_text === "string" && row.extracted_text.length > 0),
     ocrStatus:
       row.ocr_status === "pending" || row.ocr_status === "failed"
         ? row.ocr_status
@@ -356,6 +425,16 @@ function mapDocumentRow(row: Record<string, unknown>): Document {
         : undefined,
     createdAt: new Date(String(row.created_at)).toISOString()
   };
+}
+
+function buildTextFallbackFilename(filename: string): string {
+  const trimmed = filename.trim();
+
+  if (trimmed.toLowerCase().endsWith(".txt")) {
+    return trimmed;
+  }
+
+  return `${trimmed}.txt`;
 }
 
 function mapDocumentAnalysisRow(row: Record<string, unknown>): DocumentAnalysis {

@@ -7,6 +7,7 @@ export interface Document {
   sizeBytes?: number;
   metadata?: Record<string, unknown>;
   extractedText?: string;
+  hasFileContent?: boolean;
   ocrStatus: DocumentOcrStatus;
   uploadedByUserId: string;
   createdWorkItemId?: string;

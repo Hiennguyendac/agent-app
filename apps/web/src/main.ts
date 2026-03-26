@@ -177,6 +177,7 @@ interface WorkItemFile {
   filename: string;
   contentType?: string;
   sizeBytes?: number;
+  hasFileContent?: boolean;
   uploadedByUserId?: string;
   createdAt: string;
 }
@@ -222,6 +223,7 @@ interface Document {
   sizeBytes?: number;
   metadata?: Record<string, unknown>;
   extractedText?: string;
+  hasFileContent?: boolean;
   ocrStatus: DocumentOcrStatus;
   uploadedByUserId: string;
   createdWorkItemId?: string;
@@ -347,6 +349,7 @@ let currentDepartments: Department[] = [];
 let currentUsers: AppUserProfile[] = [];
 let currentDocuments: DocumentListItem[] = [];
 let selectedDocumentId: string | null = null;
+let currentAnalyzingDocumentId: string | null = null;
 let currentWorkItems: WorkItemListItem[] = [];
 let selectedWorkItemId: string | null = null;
 let currentWorkItemAssignments: Assignment[] = [];
@@ -418,11 +421,10 @@ app.innerHTML = `
       </div>
       <nav class="sidebar-nav" aria-label="Primary">
         <button class="nav-button" type="button" data-view="overview">Overview</button>
-        <button class="nav-button" type="button" data-view="documents">Documents</button>
-        <button class="nav-button" type="button" data-view="work-items">Work Items</button>
-        <button class="nav-button" type="button" data-view="approvals">Principal Review</button>
-        <button class="nav-button" type="button" data-view="assignments">Assignments</button>
-        <button class="nav-button" type="button" data-view="department-tasks">Department Tasks</button>
+        <button class="nav-button" type="button" data-view="documents">Intake Inbox</button>
+        <button class="nav-button" type="button" data-view="approvals">Principal Routing</button>
+        <button class="nav-button" type="button" data-view="department-tasks">Department Execution</button>
+        <button class="nav-button" type="button" data-view="work-items">Records</button>
         <button class="nav-button" type="button" data-view="reports">Reports</button>
         <button class="nav-button" type="button" data-view="admin">Admin</button>
         <button class="nav-button" type="button" data-view="account">Account</button>
@@ -446,8 +448,8 @@ app.innerHTML = `
           </p>
         </div>
         <section class="account-card" aria-label="Current account">
-          <p class="detail-label">User Console</p>
-          <p class="detail-value">Session, password, and dev fallback controls now live in the dedicated Account view.</p>
+          <p class="detail-label">Account</p>
+          <p class="detail-value">Login, password change, and session controls live in the Account view.</p>
           <div class="auth-actions">
             <button class="secondary-button" type="button" data-view="account">Open Account</button>
           </div>
@@ -493,38 +495,43 @@ app.innerHTML = `
         <div class="panel">
           <div class="tasks-header">
             <div>
-              <p class="eyebrow">Intake</p>
-              <h3>Documents</h3>
+              <p class="eyebrow">Step 1</p>
+              <h3>Intake Inbox</h3>
             </div>
             <button id="refresh-documents-button" class="secondary-button" type="button">Refresh Documents</button>
           </div>
+          <p class="intro workflow-note">
+            Upload incoming school documents, review extracted context, then create the principal-facing record.
+          </p>
 
-          <div class="toolbar-row">
+          <div class="toolbar-row compact-toolbar">
             <div class="field">
               <label for="document-search">Search documents</label>
               <input id="document-search" type="text" placeholder="Search filename, extracted text, uploader" />
             </div>
+            <details class="inline-disclosure">
+              <summary>Upload New Document</summary>
+              <form id="document-form" class="task-form disclosure-form" novalidate>
+                <div class="field">
+                  <label for="document-file">Upload school document</label>
+                  <input id="document-file" name="documentFile" type="file" />
+                </div>
+                <div class="field">
+                  <label for="document-title">Document note</label>
+                  <input id="document-title" name="documentTitle" type="text" placeholder="Incoming request from parent or department" />
+                </div>
+                <div class="field">
+                  <label for="document-metadata">Metadata JSON</label>
+                  <textarea id="document-metadata" name="documentMetadata" rows="3" placeholder='{"source":"front-office","channel":"email"}'></textarea>
+                </div>
+                <button id="create-document-button" class="primary-button" type="submit">Upload Document</button>
+              </form>
+            </details>
           </div>
 
-          <form id="document-form" class="task-form" novalidate>
-            <div class="field">
-              <label for="document-file">Upload school document</label>
-              <input id="document-file" name="documentFile" type="file" />
-            </div>
-            <div class="field">
-              <label for="document-title">Document note</label>
-              <input id="document-title" name="documentTitle" type="text" placeholder="Incoming request from parent or department" />
-            </div>
-            <div class="field">
-              <label for="document-metadata">Metadata JSON</label>
-              <textarea id="document-metadata" name="documentMetadata" rows="3" placeholder='{"source":"front-office","channel":"email"}'></textarea>
-            </div>
-            <button id="create-document-button" class="primary-button" type="submit">Upload Document</button>
-          </form>
-
-          <div class="work-item-layout">
-            <div id="document-list" class="task-list"></div>
-            <section id="document-detail" class="result-card hidden">
+          <div class="work-item-layout app-split-layout">
+            <div id="document-list" class="task-list split-list"></div>
+            <section id="document-detail" class="result-card split-detail hidden">
               <h3 id="document-detail-title">Document Detail</h3>
               <p id="document-detail-meta" class="result-meta"></p>
               <div id="document-detail-body" class="work-item-detail-body"></div>
@@ -537,45 +544,50 @@ app.innerHTML = `
         <div class="panel">
           <div class="tasks-header">
             <div>
-              <p class="eyebrow">School Workflow</p>
-              <h3>Work Items</h3>
+              <p class="eyebrow">Records</p>
+              <h3>Work Item Records</h3>
             </div>
             <button id="refresh-work-items-button" class="secondary-button" type="button">Refresh Work Items</button>
           </div>
+          <p class="intro workflow-note">
+            This is the case record view. Use it when you need the full file, assignment, history, and review context.
+          </p>
 
-          <div class="toolbar-row">
+          <div class="toolbar-row compact-toolbar">
             <div class="field">
               <label for="work-item-search">Search work items</label>
               <input id="work-item-search" type="text" placeholder="Search title, description, creator" />
             </div>
+            <details class="inline-disclosure">
+              <summary>Create Work Item</summary>
+              <form id="work-item-form" class="task-form disclosure-form" novalidate>
+                <div class="field">
+                  <label for="work-item-title">Work item title</label>
+                  <input id="work-item-title" name="workItemTitle" type="text" placeholder="Teacher leave request review" />
+                </div>
+                <div class="field">
+                  <label for="work-item-description">Description</label>
+                  <textarea id="work-item-description" name="workItemDescription" rows="3" placeholder="Describe the school workflow item"></textarea>
+                </div>
+                <div class="field">
+                  <label for="work-item-department">Department</label>
+                  <select id="work-item-department" name="workItemDepartment">
+                    <option value="">No department</option>
+                  </select>
+                </div>
+                <button id="create-work-item-button" class="primary-button" type="submit">Create Work Item</button>
+              </form>
+            </details>
           </div>
-
-          <form id="work-item-form" class="task-form" novalidate>
-            <div class="field">
-              <label for="work-item-title">Work item title</label>
-              <input id="work-item-title" name="workItemTitle" type="text" placeholder="Teacher leave request review" />
-            </div>
-            <div class="field">
-              <label for="work-item-description">Description</label>
-              <textarea id="work-item-description" name="workItemDescription" rows="3" placeholder="Describe the school workflow item"></textarea>
-            </div>
-            <div class="field">
-              <label for="work-item-department">Department</label>
-              <select id="work-item-department" name="workItemDepartment">
-                <option value="">No department</option>
-              </select>
-            </div>
-            <button id="create-work-item-button" class="primary-button" type="submit">Create Work Item</button>
-          </form>
 
           <section id="department-task-queue" class="result-card hidden">
             <h3>Department Task Queue</h3>
             <div id="department-task-queue-list" class="work-item-queue"></div>
           </section>
 
-          <div class="work-item-layout">
-            <div id="work-item-list" class="task-list"></div>
-            <section id="work-item-detail" class="result-card hidden">
+          <div class="work-item-layout app-split-layout">
+            <div id="work-item-list" class="task-list split-list"></div>
+            <section id="work-item-detail" class="result-card split-detail hidden">
               <h3 id="work-item-detail-title">Work Item Detail</h3>
               <p id="work-item-detail-meta" class="result-meta"></p>
               <div id="work-item-detail-body" class="work-item-detail-body"></div>
@@ -608,11 +620,14 @@ app.innerHTML = `
         <div class="panel">
           <div class="tasks-header">
             <div>
-              <p class="eyebrow">Execution</p>
-              <h3>Department Tasks</h3>
+              <p class="eyebrow">Step 4</p>
+              <h3>Department Execution</h3>
             </div>
             <button id="refresh-button" class="secondary-button" type="button">Refresh Tasks</button>
           </div>
+          <p class="intro workflow-note">
+            Open the assigned task, update progress, attach evidence, and submit the department response for review.
+          </p>
           <div class="toolbar-row">
             <div class="status-filter-tabs" id="department-task-status-tabs">
               <button class="tab-button is-active" type="button" data-status-filter="all">All</button>
@@ -629,9 +644,9 @@ app.innerHTML = `
               <option value="failed">Failed</option>
             </select>
           </div>
-          <div class="work-item-layout">
-            <div id="task-list" class="task-list"></div>
-            <section id="department-task-detail" class="result-card hidden">
+          <div class="work-item-layout app-split-layout">
+            <div id="task-list" class="task-list split-list"></div>
+            <section id="department-task-detail" class="result-card split-detail hidden">
               <h3 id="department-task-detail-title">Task Detail</h3>
               <p id="department-task-detail-meta" class="result-meta"></p>
               <div id="department-task-detail-body" class="work-item-detail-body"></div>
@@ -644,15 +659,15 @@ app.innerHTML = `
         <div class="overview-grid">
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Principal Review</p>
-              <h3>Items Waiting Principal Decision</h3>
+              <p class="eyebrow">Step 2</p>
+              <h3>Principal Routing Queue</h3>
             </div>
             <div id="approvals-queue" class="work-item-queue"></div>
           </section>
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Principal Review</p>
-              <h3>Decision Workspace</h3>
+              <p class="eyebrow">Step 2 & 3</p>
+              <h3>Routing & Assignment Workspace</h3>
             </div>
             <div id="approvals-assignment-list" class="admin-list"></div>
           </section>
@@ -683,73 +698,79 @@ app.innerHTML = `
           <div class="admin-section">
             <div class="admin-card" data-admin-panel="departments">
               <h3>Departments</h3>
-              <div class="admin-form-row">
-                <div class="field">
-                  <label for="department-name">Department name</label>
-                  <input id="department-name" name="departmentName" type="text" placeholder="Academic Affairs" />
+              <details class="inline-disclosure">
+                <summary>Add Department</summary>
+                <div class="admin-form-row disclosure-form">
+                  <div class="field">
+                    <label for="department-name">Department name</label>
+                    <input id="department-name" name="departmentName" type="text" placeholder="Academic Affairs" />
+                  </div>
+                  <div class="field">
+                    <label for="department-code">Department code</label>
+                    <input id="department-code" name="departmentCode" type="text" placeholder="ACADEMIC" />
+                  </div>
+                  <div class="auth-actions">
+                    <button id="create-department-button" class="secondary-button" type="button">Add Department</button>
+                  </div>
                 </div>
-                <div class="field">
-                  <label for="department-code">Department code</label>
-                  <input id="department-code" name="departmentCode" type="text" placeholder="ACADEMIC" />
-                </div>
-                <div class="auth-actions">
-                  <button id="create-department-button" class="secondary-button" type="button">Add Department</button>
-                </div>
-              </div>
+              </details>
               <div id="department-list" class="admin-list"></div>
             </div>
 
             <div class="admin-card hidden" data-admin-panel="users">
               <h3>User Assignment</h3>
-              <article class="admin-item">
-                <div class="admin-user-header">
-                  <strong>Add user</strong>
-                  <span>Create a new internal account</span>
-                </div>
-                <div class="admin-item-grid">
-                  <div class="field">
-                    <label for="create-user-username">Username</label>
-                    <input id="create-user-username" type="text" placeholder="new.user" />
+              <details class="inline-disclosure" open>
+                <summary>Add User</summary>
+                <article class="admin-item disclosure-form">
+                  <div class="admin-user-header">
+                    <strong>Create internal account</strong>
+                    <span>Role and department can be set immediately</span>
                   </div>
-                  <div class="field">
-                    <label for="create-user-display-name">Display name</label>
-                    <input id="create-user-display-name" type="text" placeholder="New User" />
+                  <div class="admin-item-grid">
+                    <div class="field">
+                      <label for="create-user-username">Username</label>
+                      <input id="create-user-username" type="text" placeholder="new.user" />
+                    </div>
+                    <div class="field">
+                      <label for="create-user-display-name">Display name</label>
+                      <input id="create-user-display-name" type="text" placeholder="New User" />
+                    </div>
+                    <div class="field">
+                      <label for="create-user-password">Password</label>
+                      <input id="create-user-password" type="password" placeholder="At least 10 characters" />
+                    </div>
+                    <div class="field">
+                      <label for="create-user-role">Role</label>
+                      <select id="create-user-role">
+                        <option value="admin">admin</option>
+                        <option value="principal">principal</option>
+                        <option value="department_head">department_head</option>
+                        <option value="staff" selected>staff</option>
+                        <option value="clerk">clerk</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="create-user-department">Department</label>
+                      <select id="create-user-department">
+                        <option value="">No department</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="create-user-position">Position</label>
+                      <input id="create-user-position" type="text" placeholder="Coordinator" />
+                    </div>
+                    <label class="checkbox-field">
+                      <input id="create-user-active" type="checkbox" checked />
+                      Active
+                    </label>
+                    <div class="auth-actions">
+                      <button id="create-user-button" class="secondary-button" type="button">
+                        Add User
+                      </button>
+                    </div>
                   </div>
-                  <div class="field">
-                    <label for="create-user-password">Password</label>
-                    <input id="create-user-password" type="password" placeholder="At least 10 characters" />
-                  </div>
-                  <div class="field">
-                    <label for="create-user-role">Role</label>
-                    <select id="create-user-role">
-                      <option value="admin">admin</option>
-                      <option value="principal">principal</option>
-                      <option value="department_head">department_head</option>
-                      <option value="staff" selected>staff</option>
-                      <option value="clerk">clerk</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="create-user-department">Department</label>
-                    <select id="create-user-department">
-                      <option value="">No department</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="create-user-position">Position</label>
-                    <input id="create-user-position" type="text" placeholder="Coordinator" />
-                  </div>
-                  <label class="checkbox-field">
-                    <input id="create-user-active" type="checkbox" checked />
-                    Active
-                  </label>
-                  <div class="auth-actions">
-                    <button id="create-user-button" class="secondary-button" type="button">
-                      Add User
-                    </button>
-                  </div>
-                </div>
-              </article>
+                </article>
+              </details>
               <div id="user-admin-list" class="admin-list"></div>
             </div>
           </div>
@@ -1771,23 +1792,27 @@ function renderTaskList(tasks: TaskListItem[]): void {
   taskList.innerHTML = filteredTasks
     .map(
       (task) => `
-        <article class="task-card ${selectedTaskId === task.task.id ? "is-selected" : ""}">
-          <div class="task-card-row">
-            <h3>${escapeHtml(task.task.title)}</h3>
+        <article class="task-card list-row ${selectedTaskId === task.task.id ? "is-selected" : ""}">
+          <div class="task-card-row list-row-header">
+            <h3 class="list-row-title">${escapeHtml(task.task.title)}</h3>
             <span class="status-badge status-${task.task.status}">
               ${escapeHtml(task.task.status)}
             </span>
           </div>
-          <p><strong>Task Type:</strong> ${escapeHtml(task.task.taskType)}</p>
-          <p><strong>Owner:</strong> ${escapeHtml(getOwnerLabel(task.task.ownerId))}</p>
-          <p><strong>Created At:</strong> ${formatDate(task.task.createdAt)}</p>
-          <button
-            class="secondary-button task-detail-button"
-            type="button"
-            data-task-id="${escapeHtml(task.task.id)}"
-          >
-            ${selectedTaskId === task.task.id ? "Hide Task Detail" : "Open Task Detail"}
-          </button>
+          <div class="list-row-meta">
+            <span>${escapeHtml(task.task.ownerDepartmentId ?? "No department")}</span>
+            <span>${escapeHtml(getOwnerLabel(task.task.ownerId))}</span>
+            <span>${formatDate(task.task.createdAt)}</span>
+          </div>
+          <div class="auth-actions">
+            <button
+              class="secondary-button task-detail-button"
+              type="button"
+              data-task-id="${escapeHtml(task.task.id)}"
+            >
+              ${selectedTaskId === task.task.id ? "Hide" : "Open"}
+            </button>
+          </div>
         </article>
       `
     )
@@ -1925,6 +1950,48 @@ function bindTaskListInteractions(container: HTMLElement): void {
           button.dataset.openLinkedDocumentId ?? null,
           "summary"
         );
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-download-linked-document-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await downloadApiFile(
+            `/api/documents/${encodeURIComponent(button.dataset.downloadLinkedDocumentId ?? "")}/download`,
+            button.dataset.downloadLinkedDocumentFilename ?? "document.bin",
+            "Document downloaded."
+          );
+        } catch (error: unknown) {
+          setStatus(
+            error instanceof Error
+              ? error.message
+              : "Something went wrong while downloading the document.",
+            "error"
+          );
+        }
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-download-work-item-file-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await downloadApiFile(
+            `/api/work-items/${encodeURIComponent(button.dataset.downloadWorkItemId ?? "")}/files/${encodeURIComponent(button.dataset.downloadWorkItemFileId ?? "")}/download`,
+            button.dataset.downloadWorkItemFilename ?? "attachment.bin",
+            "Attachment downloaded."
+          );
+        } catch (error: unknown) {
+          setStatus(
+            error instanceof Error
+              ? error.message
+              : "Something went wrong while downloading the attachment.",
+            "error"
+          );
+        }
       });
     });
 
@@ -2383,6 +2450,20 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                         >
                           Open Source Document
                         </button>
+                        ${
+                          linkedDocument.document.hasFileContent
+                            ? `
+                              <button
+                                class="secondary-button task-action-button"
+                                type="button"
+                                data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
+                                data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
+                              >
+                                Download Source Document
+                              </button>
+                            `
+                            : ""
+                        }
                       `
                       : ""
                   }
@@ -2401,12 +2482,47 @@ function renderTaskDetail(taskItem: TaskListItem): string {
               ? linkedWorkItem.files
                   .map(
                     (file) => `
-                      <p>${escapeHtml(file.filename)}${file.contentType ? ` (${escapeHtml(file.contentType)})` : ""}</p>
+                      <div class="task-card-row">
+                        <span>${escapeHtml(file.filename)}${file.contentType ? ` (${escapeHtml(file.contentType)})` : ""}</span>
+                        ${
+                          file.hasFileContent
+                            ? `
+                              <button
+                                class="secondary-button task-action-button"
+                                type="button"
+                                data-download-work-item-file-id="${escapeHtml(file.id)}"
+                                data-download-work-item-id="${escapeHtml(file.workItemId)}"
+                                data-download-work-item-filename="${escapeHtml(file.filename)}"
+                              >
+                                Download
+                              </button>
+                            `
+                            : ""
+                        }
+                      </div>
                     `
                   )
                   .join("")
               : linkedDocument
-                ? `<p>${escapeHtml(linkedDocument.document.filename)} (source document)</p>`
+                ? `
+                    <div class="task-card-row">
+                      <span>${escapeHtml(linkedDocument.document.filename)} (source document)</span>
+                      ${
+                        linkedDocument.document.hasFileContent
+                          ? `
+                            <button
+                              class="secondary-button task-action-button"
+                              type="button"
+                              data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
+                              data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
+                            >
+                              Download
+                            </button>
+                          `
+                          : ""
+                      }
+                    </div>
+                  `
                 : "<p>No files attached to this task yet.</p>"
           }
         </div>
@@ -2948,6 +3064,36 @@ async function readApiError(
   }
 }
 
+async function downloadApiFile(
+  path: string,
+  fallbackFilename: string,
+  successMessage: string
+): Promise<void> {
+  const response = await fetch(path, {
+    headers: buildApiHeaders()
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response, "The API could not download the file"));
+  }
+
+  const blob = await response.blob();
+  const contentDisposition = response.headers.get("content-disposition");
+  const filenameMatch =
+    contentDisposition?.match(/filename="([^"]+)"/i) ??
+    contentDisposition?.match(/filename=([^;]+)/i);
+  const filename = filenameMatch?.[1]?.trim() || fallbackFilename;
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
+  setStatus(successMessage, "success");
+}
+
 function formatDate(value: string): string {
   const date = new Date(value);
 
@@ -3109,10 +3255,9 @@ function getAllowedViews(): Array<typeof currentView> {
     return [
       "overview",
       "documents",
-      "work-items",
-      "assignments",
-      "department-tasks",
       "approvals",
+      "department-tasks",
+      "work-items",
       "reports",
       "admin",
       "account",
@@ -3144,11 +3289,19 @@ function renderSidebarVisibility(): void {
     button.classList.toggle("hidden", !shouldShow);
   });
 
+  if (currentView === "assignments") {
+    currentView = allowedViews.has("approvals") ? "approvals" : "overview";
+  }
+
   if (!allowedViews.has(currentView)) {
     currentView = allowedViews.has("documents")
       ? "documents"
-      : allowedViews.has("work-items")
-        ? "work-items"
+      : allowedViews.has("approvals")
+        ? "approvals"
+        : allowedViews.has("department-tasks")
+          ? "department-tasks"
+          : allowedViews.has("work-items")
+            ? "work-items"
         : "overview";
   }
 }
@@ -3635,23 +3788,27 @@ function renderDocumentList(items: DocumentListItem[]): void {
   documentList.innerHTML = filteredItems
     .map(
       (item) => `
-        <article class="task-card ${selectedDocumentId === item.document.id ? "is-selected" : ""}">
-          <div class="task-card-row">
-            <h3>${escapeHtml(item.document.filename)}</h3>
+        <article class="task-card list-row ${selectedDocumentId === item.document.id ? "is-selected" : ""}">
+          <div class="task-card-row list-row-header">
+            <h3 class="list-row-title">${escapeHtml(item.document.filename)}</h3>
             <span class="status-badge status-${escapeHtml(item.document.ocrStatus)}">
               ${escapeHtml(item.document.ocrStatus)}
             </span>
           </div>
-          <p><strong>Uploaded By:</strong> ${escapeHtml(item.document.uploadedByUserId)}</p>
-          <p><strong>Work Item:</strong> ${escapeHtml(item.document.createdWorkItemId ?? "not created")}</p>
-          <p><strong>Created:</strong> ${formatDate(item.document.createdAt)}</p>
-          <button
-            class="secondary-button task-detail-button"
-            type="button"
-            data-document-id="${escapeHtml(item.document.id)}"
-          >
-            ${selectedDocumentId === item.document.id ? "Hide Details" : "Open Document"}
-          </button>
+          <div class="list-row-meta">
+            <span>Uploaded by ${escapeHtml(item.document.uploadedByUserId)}</span>
+            <span>${formatDate(item.document.createdAt)}</span>
+            <span>${escapeHtml(item.document.createdWorkItemId ? "Linked work item" : "No work item")}</span>
+          </div>
+          <div class="auth-actions">
+            <button
+              class="secondary-button task-detail-button"
+              type="button"
+              data-document-id="${escapeHtml(item.document.id)}"
+            >
+              ${selectedDocumentId === item.document.id ? "Hide" : "Open"}
+            </button>
+          </div>
         </article>
       `
     )
@@ -3748,6 +3905,7 @@ async function openDocumentWithTab(
 }
 
 function renderDocumentDetail(item: DocumentListItem): void {
+  const isAnalyzing = currentAnalyzingDocumentId === item.document.id;
   documentDetail.classList.remove("hidden");
   documentDetailTitle.textContent = item.document.filename;
   documentDetailMeta.textContent = [
@@ -3763,7 +3921,12 @@ function renderDocumentDetail(item: DocumentListItem): void {
       <button class="tab-button" type="button" data-document-tab="text">Extracted Text</button>
     </div>
     <div class="task-actions">
-      <button id="analyze-document-button" class="secondary-button" type="button">Analyze Intake</button>
+      <button
+        id="analyze-document-button"
+        class="secondary-button"
+        type="button"
+        ${isAnalyzing ? "disabled" : ""}
+      >${isAnalyzing ? "Analyzing..." : "Analyze Intake"}</button>
       <button id="create-document-work-item-button" class="secondary-button" type="button">
         Create Work Item
       </button>
@@ -3942,9 +4105,17 @@ async function handleCreateDocument(): Promise<void> {
     documentForm.reset();
     documentMetadataInput.value = "";
     documentTitleInput.value = "";
-    await loadDocuments();
-    await selectDocumentById(data.document.id);
     setStatus("Document uploaded successfully.", "success");
+
+    try {
+      await loadDocuments();
+      await selectDocumentById(data.document.id);
+    } catch {
+      setStatus(
+        "Document uploaded successfully. Refresh the intake list if the new record is not shown yet.",
+        "success"
+      );
+    }
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
@@ -3993,6 +4164,14 @@ async function readFileAsBase64(file: File): Promise<string> {
 
 async function handleAnalyzeDocument(documentId: string): Promise<void> {
   try {
+    currentAnalyzingDocumentId = documentId;
+    const currentDetail = currentDocuments.find((item) => item.document.id === documentId);
+
+    if (currentDetail) {
+      renderDocumentDetail(currentDetail);
+    }
+
+    setStatus("Analyzing document intake...", "loading");
     const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/analyze`, {
       method: "POST",
       headers: buildApiHeaders()
@@ -4015,6 +4194,14 @@ async function handleAnalyzeDocument(documentId: string): Promise<void> {
         : "Something went wrong while analyzing the document.",
       "error"
     );
+  } finally {
+    currentAnalyzingDocumentId = null;
+
+    const refreshedDetail = currentDocuments.find((item) => item.document.id === documentId);
+
+    if (refreshedDetail) {
+      renderDocumentDetail(refreshedDetail);
+    }
   }
 }
 
@@ -4143,36 +4330,40 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
         );
 
         return `
-        <article class="task-card ${selectedWorkItemId === item.workItem.id ? "is-selected" : ""}">
-          <div class="task-card-row">
-            <h3>${escapeHtml(item.workItem.title)}</h3>
+        <article class="task-card list-row ${selectedWorkItemId === item.workItem.id ? "is-selected" : ""}">
+          <div class="task-card-row list-row-header">
+            <h3 class="list-row-title">${escapeHtml(item.workItem.title)}</h3>
             <span class="status-badge status-${escapeHtml(item.workItem.status)}">
               ${escapeHtml(item.workItem.status)}
             </span>
           </div>
-          <p><strong>Created By:</strong> ${escapeHtml(item.workItem.createdByUserId)}</p>
-          <p><strong>Department:</strong> ${escapeHtml(item.workItem.departmentId ?? "none")}</p>
-          <p><strong>Updated:</strong> ${formatDate(item.workItem.updatedAt)}</p>
-          <button
-            class="secondary-button task-detail-button"
-            type="button"
-            data-work-item-id="${escapeHtml(item.workItem.id)}"
-          >
-            ${selectedWorkItemId === item.workItem.id ? "Hide Details" : "View Details"}
-          </button>
-          ${
-            assignment
-              ? `
-                <button
-                  class="secondary-button task-detail-button"
-                  type="button"
-                  data-open-work-item-task-id="${escapeHtml(assignment.taskId)}"
-                >
-                  Open Linked Task
-                </button>
-              `
-              : ""
-          }
+          <div class="list-row-meta">
+            <span>${escapeHtml(item.workItem.departmentId ?? "No department")}</span>
+            <span>By ${escapeHtml(item.workItem.createdByUserId)}</span>
+            <span>${formatDate(item.workItem.updatedAt)}</span>
+          </div>
+          <div class="auth-actions">
+            <button
+              class="secondary-button task-detail-button"
+              type="button"
+              data-work-item-id="${escapeHtml(item.workItem.id)}"
+            >
+              ${selectedWorkItemId === item.workItem.id ? "Hide" : "Open"}
+            </button>
+            ${
+              assignment
+                ? `
+                  <button
+                    class="secondary-button task-detail-button"
+                    type="button"
+                    data-open-work-item-task-id="${escapeHtml(assignment.taskId)}"
+                  >
+                    Linked Task
+                  </button>
+                `
+                : ""
+            }
+          </div>
         </article>
       `;
       }
@@ -4263,7 +4454,8 @@ function renderAssignmentsList(assignments: Assignment[]): void {
         No assignments are visible for the current user.
       </div>
     `;
-    approvalsAssignmentList.innerHTML = assignmentList.innerHTML;
+    renderAssignmentQueue();
+    renderAssignmentWorkspace();
     renderApprovalsQueue();
     return;
   }
@@ -4327,28 +4519,8 @@ function renderAssignmentsList(assignments: Assignment[]): void {
       });
     });
 
-  approvalsAssignmentList.innerHTML = assignmentList.innerHTML;
-  approvalsAssignmentList
-    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-work-item-id]")
-    .forEach((button) => {
-      button.addEventListener("click", async () => {
-        currentView = "work-items";
-        renderCurrentView();
-        await selectWorkItemById(button.dataset.openAssignmentWorkItemId ?? null);
-      });
-    });
-
-  approvalsAssignmentList
-    .querySelectorAll<HTMLButtonElement>("[data-open-assignment-task-id]")
-    .forEach((button) => {
-      button.addEventListener("click", () => {
-        currentView = "department-tasks";
-        renderCurrentView();
-        void focusTaskById(button.dataset.openAssignmentTaskId ?? null);
-      });
-    });
-
   renderApprovalsQueue();
+  renderPrincipalReviewWorkspace();
 }
 
 function renderAssignmentQueue(): void {
@@ -4531,11 +4703,8 @@ function renderPrincipalReviewWorkspace(): void {
   }
 
   if (!selectedWorkItemId) {
-    approvalsAssignmentList.innerHTML = `
-      <div class="empty-state">
-        Select an intake record from the queue to set the routing direction, lead department, and principal note.
-      </div>
-    `;
+    approvalsAssignmentList.innerHTML = buildPrincipalWorkflowHtml(null);
+    bindPrincipalWorkflowInteractions();
     return;
   }
 
@@ -4549,11 +4718,8 @@ function renderPrincipalReviewWorkspace(): void {
     ) ?? null;
 
   if (!selectedItem) {
-    approvalsAssignmentList.innerHTML = `
-      <div class="empty-state">
-        The selected work item is no longer visible.
-      </div>
-    `;
+    approvalsAssignmentList.innerHTML = buildPrincipalWorkflowHtml(null);
+    bindPrincipalWorkflowInteractions();
     return;
   }
 
@@ -4636,13 +4802,14 @@ function renderPrincipalReviewWorkspace(): void {
           selectedItem.workItem.status === "waiting_assignment"
             ? `
               <button id="go-to-assignment-queue-button" class="secondary-button" type="button">
-                Go To Assignment Queue
+                Open Assignment Step
               </button>
             `
             : ""
         }
       </div>
     </article>
+    ${buildPrincipalWorkflowHtml(selectedItem)}
   `;
 
   approvalsAssignmentList
@@ -4662,8 +4829,203 @@ function renderPrincipalReviewWorkspace(): void {
   approvalsAssignmentList
     .querySelector<HTMLButtonElement>("#go-to-assignment-queue-button")
     ?.addEventListener("click", () => {
-      currentView = "assignments";
-      renderCurrentView();
+      approvalsAssignmentList
+        .querySelector<HTMLElement>("#workflow-assignment-panel")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+
+  bindPrincipalWorkflowInteractions();
+}
+
+function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): string {
+  const waitingAssignmentItems = currentWorkItems.filter(
+    (item) => item.workItem.status === "waiting_assignment"
+  );
+  const assignmentFocusItem =
+    selectedItem?.workItem.status === "waiting_assignment"
+      ? selectedItem
+      : waitingAssignmentItems[0] ?? null;
+  const assignmentFocusRecord =
+    assignmentFocusItem == null
+      ? null
+      : currentAssignments.find(
+          (assignment) => assignment.workItemId === assignmentFocusItem.workItem.id
+        ) ?? null;
+
+  const waitingAssignmentHtml =
+    waitingAssignmentItems.length > 0
+      ? waitingAssignmentItems
+          .map(
+            (item) => `
+              <button
+                class="queue-item-button"
+                type="button"
+                data-workflow-assignment-work-item-id="${escapeHtml(item.workItem.id)}"
+              >
+                <strong>${escapeHtml(item.workItem.title)}</strong>
+                <span>${escapeHtml(item.workItem.routingPriority ?? "normal")}</span>
+              </button>
+            `
+          )
+          .join("")
+      : `
+          <div class="empty-state">
+            No work items are waiting for formal assignment.
+          </div>
+        `;
+
+  const assignmentFocusHtml = assignmentFocusItem
+    ? `
+        <article class="admin-item">
+          <div class="task-card-row">
+            <strong>${escapeHtml(assignmentFocusItem.workItem.title)}</strong>
+            <span class="status-badge status-${escapeHtml(assignmentFocusItem.workItem.status)}">
+              ${escapeHtml(assignmentFocusItem.workItem.status)}
+            </span>
+          </div>
+          <p><strong>Lead department:</strong> ${escapeHtml(
+            assignmentFocusItem.workItem.leadDepartmentId ??
+              assignmentFocusItem.workItem.departmentId ??
+              "not chosen"
+          )}</p>
+          <p><strong>Priority:</strong> ${escapeHtml(
+            assignmentFocusItem.workItem.routingPriority ?? "normal"
+          )}</p>
+          <p><strong>Output requirement:</strong> ${escapeHtml(
+            assignmentFocusItem.workItem.outputRequirement ?? "not specified"
+          )}</p>
+          <p><strong>Current assignment:</strong> ${escapeHtml(
+            assignmentFocusRecord?.mainDepartmentId ?? "not created"
+          )}</p>
+          <div class="auth-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              data-workflow-open-record-id="${escapeHtml(assignmentFocusItem.workItem.id)}"
+            >
+              Open Record Workspace
+            </button>
+            ${
+              assignmentFocusRecord
+                ? `
+                    <button
+                      class="secondary-button"
+                      type="button"
+                      data-workflow-open-task-id="${escapeHtml(assignmentFocusRecord.taskId)}"
+                    >
+                      Open Department Task
+                    </button>
+                  `
+                : ""
+            }
+          </div>
+        </article>
+      `
+    : `
+        <div class="empty-state">
+          Select a routed record to prepare or review its assignment handoff.
+        </div>
+      `;
+
+  const assignmentLedgerHtml =
+    currentAssignments.length > 0
+      ? currentAssignments
+          .slice(0, 6)
+          .map(
+            (assignment) => `
+              <article class="admin-item">
+                <div class="task-card-row">
+                  <strong>${escapeHtml(assignment.workItemId)}</strong>
+                  <span class="status-badge status-running">${escapeHtml(assignment.status)}</span>
+                </div>
+                <p><strong>Main Department:</strong> ${escapeHtml(assignment.mainDepartmentId)}</p>
+                <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "none")}</p>
+                <p><strong>Adjustment Reason:</strong> ${escapeHtml(
+                  assignment.adjustmentReason ?? "none"
+                )}</p>
+                <div class="auth-actions">
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    data-workflow-open-record-id="${escapeHtml(assignment.workItemId)}"
+                  >
+                    Open Record
+                  </button>
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    data-workflow-open-task-id="${escapeHtml(assignment.taskId)}"
+                  >
+                    Open Task
+                  </button>
+                </div>
+              </article>
+            `
+          )
+          .join("")
+      : `
+          <div class="empty-state">
+            No assignment handoffs have been created yet.
+          </div>
+        `;
+
+  return `
+    <section id="workflow-assignment-panel" class="workflow-section">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Step 3</p>
+          <h3>Assignment Handoff</h3>
+        </div>
+      </div>
+      <p class="intro workflow-note">
+        Once a record is routed, stay in this same workspace to create the department handoff and monitor acceptance.
+      </p>
+      <div class="workflow-columns">
+        <div class="workflow-column">
+          <p class="detail-label">Waiting Assignment</p>
+          <div class="work-item-queue">${waitingAssignmentHtml}</div>
+        </div>
+        <div class="workflow-column">
+          <p class="detail-label">Current Assignment Focus</p>
+          <div class="admin-list">${assignmentFocusHtml}</div>
+        </div>
+      </div>
+      <div class="workflow-ledger">
+        <p class="detail-label">Recent Assignment Ledger</p>
+        <div class="admin-list">${assignmentLedgerHtml}</div>
+      </div>
+    </section>
+  `;
+}
+
+function bindPrincipalWorkflowInteractions(): void {
+  approvalsAssignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-workflow-assignment-work-item-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await selectWorkItemById(button.dataset.workflowAssignmentWorkItemId ?? null);
+        renderPrincipalReviewWorkspace();
+      });
+    });
+
+  approvalsAssignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-workflow-open-record-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        currentView = "work-items";
+        renderCurrentView();
+        await selectWorkItemById(button.dataset.workflowOpenRecordId ?? null);
+      });
+    });
+
+  approvalsAssignmentList
+    .querySelectorAll<HTMLButtonElement>("[data-workflow-open-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        currentView = "department-tasks";
+        renderCurrentView();
+        void focusTaskById(button.dataset.workflowOpenTaskId ?? null);
+      });
     });
 }
 
@@ -4714,30 +5076,97 @@ function renderOverview(): void {
     )
     .join("");
 
-  const needsAttentionItems = [
-    documentCount > 0 ? `${documentCount} intake documents are currently visible.` : null,
-    overdueCount > 0 ? `${overdueCount} assignments are overdue.` : null,
-    waitingCount > 0 ? `${waitingCount} work items are still waiting review.` : null,
-    queueCount > 0 ? `${queueCount} department tasks are visible in the queue.` : null,
-    ...currentNotifications.slice(0, 4).map((notification) => notification.message)
-  ].filter(Boolean) as string[];
+  const needsAttentionItems: Array<{
+    label: string;
+    view: typeof currentView;
+    workItemId?: string;
+    taskId?: string;
+  }> = [
+    ...(documentCount > 0
+      ? [
+          {
+            label: `${documentCount} intake documents are currently visible.`,
+            view: "documents" as const
+          }
+        ]
+      : []),
+    ...(overdueCount > 0
+      ? [
+          {
+            label: `${overdueCount} assignments are overdue.`,
+            view: "approvals" as const
+          }
+        ]
+      : []),
+    ...(waitingCount > 0
+      ? [
+          {
+            label: `${waitingCount} work items are still waiting review.`,
+            view: "approvals" as const
+          }
+        ]
+      : []),
+    ...(queueCount > 0
+      ? [
+          {
+            label: `${queueCount} department tasks are visible in the queue.`,
+            view: "department-tasks" as const
+          }
+        ]
+      : []),
+    ...currentNotifications.slice(0, 4).map((notification) => {
+      const linkedAssignment = notification.assignmentId
+        ? currentAssignments.find((assignment) => assignment.id === notification.assignmentId) ?? null
+        : null;
+
+      return {
+        label: notification.message,
+        view: notification.workItemId || linkedAssignment ? ("approvals" as const) : ("overview" as const),
+        workItemId: notification.workItemId ?? linkedAssignment?.workItemId,
+        taskId: linkedAssignment?.taskId
+      };
+    })
+  ];
 
   needsAttentionPanel.innerHTML =
     needsAttentionItems.length > 0
       ? needsAttentionItems
-          .map(
-            (item) => `
-              <article class="admin-item">
-                <p class="detail-value">${escapeHtml(item)}</p>
-              </article>
-            `
-          )
+          .map((item) => {
+            const dataWorkItemId = item.workItemId
+              ? ` data-attention-work-item-id="${escapeHtml(item.workItemId)}"`
+              : "";
+            const dataTaskId = item.taskId
+              ? ` data-attention-task-id="${escapeHtml(item.taskId)}"`
+              : "";
+
+            return `
+              <button
+                class="admin-item attention-item-button"
+                type="button"
+                data-attention-view="${escapeHtml(item.view)}"${dataWorkItemId}${dataTaskId}
+              >
+                <p class="detail-value">${escapeHtml(item.label)}</p>
+              </button>
+            `;
+          })
           .join("")
       : `
           <div class="empty-state">
             No urgent issues are detected from the current visible data.
           </div>
         `;
+
+  needsAttentionPanel
+    .querySelectorAll<HTMLButtonElement>("[data-attention-view]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        void openAttentionTarget(
+          button.dataset.attentionView as typeof currentView | undefined,
+          button.dataset.attentionWorkItemId ?? null,
+          button.dataset.attentionTaskId ?? null
+        );
+      });
+    });
 
   const recentActivity = [
     ...currentNotifications
@@ -4819,6 +5248,35 @@ function renderOverview(): void {
             Department summary will appear once departments are configured.
           </div>
         `;
+}
+
+async function openAttentionTarget(
+  nextView: typeof currentView | undefined,
+  workItemId: string | null,
+  taskId: string | null
+): Promise<void> {
+  if (!nextView) {
+    return;
+  }
+
+  currentView = nextView === "assignments" ? "approvals" : nextView;
+  renderCurrentView();
+
+  if (workItemId) {
+    if (currentView === "approvals" || currentView === "work-items") {
+      await selectWorkItemById(workItemId);
+      if (currentView === "approvals") {
+        renderPrincipalReviewWorkspace();
+      }
+      return;
+    }
+  }
+
+  if (taskId) {
+    currentView = "department-tasks";
+    renderCurrentView();
+    await focusTaskById(taskId);
+  }
 }
 
 function renderReports(): void {
@@ -5024,7 +5482,32 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         </div>
         <div>
           <p class="detail-label">Source Document</p>
-          <p class="detail-value">${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+          <div class="detail-value">
+            <p>${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+            ${
+              linkedDocument?.document.hasFileContent
+                ? `
+                  <div class="auth-actions">
+                    <button
+                      class="secondary-button task-action-button"
+                      type="button"
+                      data-open-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
+                    >
+                      Open Source Document
+                    </button>
+                    <button
+                      class="secondary-button task-action-button"
+                      type="button"
+                      data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
+                      data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
+                    >
+                      Download Source Document
+                    </button>
+                  </div>
+                `
+                : ""
+            }
+          </div>
         </div>
       </div>
     </section>
@@ -5087,6 +5570,20 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
               ? `
                 <div class="work-item-file-chip source-file-chip">
                   Source: ${escapeHtml(linkedDocument.document.filename)}
+                  ${
+                    linkedDocument.document.hasFileContent
+                      ? `
+                        <button
+                          class="secondary-button task-action-button"
+                          type="button"
+                          data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
+                          data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
+                        >
+                          Download
+                        </button>
+                      `
+                      : ""
+                  }
                 </div>
               `
               : ""
@@ -5098,6 +5595,21 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                     (file) => `
                       <div class="work-item-file-chip">
                         ${escapeHtml(file.filename)}
+                        ${
+                          file.hasFileContent
+                            ? `
+                              <button
+                                class="secondary-button task-action-button"
+                                type="button"
+                                data-download-work-item-file-id="${escapeHtml(file.id)}"
+                                data-download-work-item-id="${escapeHtml(file.workItemId)}"
+                                data-download-work-item-filename="${escapeHtml(file.filename)}"
+                              >
+                                Download
+                              </button>
+                            `
+                            : ""
+                        }
                       </div>
                     `
                   )
@@ -5230,6 +5742,48 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     .querySelector<HTMLButtonElement>("#approve-response-button")
     ?.addEventListener("click", async () => {
       await handleApproveTaskResponse(currentAssignment?.taskId ?? null);
+    });
+
+  workItemDetailBody
+    .querySelectorAll<HTMLButtonElement>("[data-download-linked-document-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await downloadApiFile(
+            `/api/documents/${encodeURIComponent(button.dataset.downloadLinkedDocumentId ?? "")}/download`,
+            button.dataset.downloadLinkedDocumentFilename ?? "document.bin",
+            "Document downloaded."
+          );
+        } catch (error: unknown) {
+          setStatus(
+            error instanceof Error
+              ? error.message
+              : "Something went wrong while downloading the document.",
+            "error"
+          );
+        }
+      });
+    });
+
+  workItemDetailBody
+    .querySelectorAll<HTMLButtonElement>("[data-download-work-item-file-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await downloadApiFile(
+            `/api/work-items/${encodeURIComponent(button.dataset.downloadWorkItemId ?? "")}/files/${encodeURIComponent(button.dataset.downloadWorkItemFileId ?? "")}/download`,
+            button.dataset.downloadWorkItemFilename ?? "attachment.bin",
+            "Attachment downloaded."
+          );
+        } catch (error: unknown) {
+          setStatus(
+            error instanceof Error
+              ? error.message
+              : "Something went wrong while downloading the attachment.",
+            "error"
+          );
+        }
+      });
     });
 
   workItemDetailBody
@@ -5618,6 +6172,7 @@ async function handleUploadWorkItemFile(
     const contentText = isInlineExtractableDocument(file)
       ? sanitizeUploadedText(await file.text())
       : undefined;
+    const contentBase64 = await readFileAsBase64(file);
     const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/files`, {
       method: "POST",
       headers: buildApiHeaders({
@@ -5627,7 +6182,8 @@ async function handleUploadWorkItemFile(
         filename: file.name,
         contentType: file.type || "text/plain",
         sizeBytes: file.size,
-        contentText
+        contentText,
+        contentBase64
       })
     });
 
@@ -5640,12 +6196,7 @@ async function handleUploadWorkItemFile(
     input.value = "";
     await loadWorkItems();
     await selectWorkItemById(workItemId);
-    setStatus(
-      contentText
-        ? "Response file uploaded successfully."
-        : "Response file metadata uploaded. Binary preview/download is not available in the current workflow yet.",
-      "success"
-    );
+    setStatus("Response file uploaded successfully.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
@@ -6138,33 +6689,33 @@ function renderCurrentView(): void {
   const titles: Record<typeof currentView, { eyebrow: string; title: string; description: string }> = {
     overview: {
       eyebrow: "Overview",
-      title: "Document Intake Overview",
-      description: "Track incoming documents, review pressure, assignment load, and department execution."
+      title: "Workflow Control Center",
+      description: "See intake pressure, principal routing load, execution progress, and review bottlenecks in one place."
     },
     documents: {
-      eyebrow: "Documents",
-      title: "Document Intake",
-      description: "Uploaded school documents are the primary intake object before they become tracked work items."
+      eyebrow: "Step 1",
+      title: "Intake Inbox",
+      description: "Receive documents, analyze their contents, and prepare the principal-facing record without leaving the intake flow."
     },
     "work-items": {
-      eyebrow: "Work Items",
-      title: "Operational Work Items",
-      description: "Work items are now the main domain view, with detail and assignment actions side by side."
+      eyebrow: "Records",
+      title: "Case Record Workspace",
+      description: "Open the full record only when you need the complete file, assignment context, review history, and approvals."
     },
     assignments: {
       eyebrow: "Assignments",
       title: "Assignment Tracking",
-      description: "Review work items that are already approved for assignment and create the formal department handoff."
+      description: "Assignment tracking remains available internally, but the main workflow now lives in Principal Routing."
     },
     "department-tasks": {
-      eyebrow: "Department Tasks",
-      title: "Execution Queue",
-      description: "Review the current department task queue and accept or reject assignments quickly."
+      eyebrow: "Step 4",
+      title: "Department Execution",
+      description: "Open the task, see the source context, upload evidence, update progress, and submit the department response."
     },
     approvals: {
-      eyebrow: "Principal Review",
-      title: "Principal Routing Workspace",
-      description: "Review intake, choose the routing direction, and prepare work items for formal assignment."
+      eyebrow: "Step 2 & 3",
+      title: "Principal Routing & Assignment",
+      description: "Route each intake record, choose the lead unit, then stay in the same workspace to create and track the assignment handoff."
     },
     reports: {
       eyebrow: "Reports",

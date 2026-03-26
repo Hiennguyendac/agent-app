@@ -42,6 +42,13 @@ export interface CreateWorkItemFileInput {
   contentType?: string;
   sizeBytes?: number;
   contentText?: string;
+  contentBase64?: string;
+}
+
+export interface DownloadableWorkItemFile {
+  filename: string;
+  contentType: string;
+  content: Buffer;
 }
 
 export async function createWorkItem(
@@ -346,15 +353,18 @@ export async function addWorkItemFile(
         content_type,
         size_bytes,
         content_text,
+        content_base64,
         uploaded_by_user_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING
         id,
         work_item_id,
         filename,
         content_type,
         size_bytes,
+        content_text,
+        content_base64,
         uploaded_by_user_id,
         created_at
     `,
@@ -365,11 +375,69 @@ export async function addWorkItemFile(
       input.contentType ?? null,
       input.sizeBytes ?? null,
       input.contentText ?? null,
+      input.contentBase64 ?? null,
       uploadedByUserId
     ]
   );
 
   return mapWorkItemFileRow(result.rows[0]);
+}
+
+export async function getWorkItemFileDownload(
+  workItemId: string,
+  fileId: string,
+  accessContext: TaskAccessContext
+): Promise<DownloadableWorkItemFile | null> {
+  const detail = await getWorkItemById(workItemId, accessContext);
+
+  if (!detail) {
+    return null;
+  }
+
+  const result = await getDbPool().query(
+    `
+      SELECT
+        id,
+        filename,
+        content_type,
+        content_text,
+        content_base64
+      FROM work_item_files
+      WHERE id = $1
+        AND work_item_id = $2
+      LIMIT 1
+    `,
+    [fileId, workItemId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const row = result.rows[0] as {
+    filename: string;
+    content_type?: string | null;
+    content_text?: string | null;
+    content_base64?: string | null;
+  };
+
+  if (typeof row.content_base64 === "string" && row.content_base64.length > 0) {
+    return {
+      filename: row.filename,
+      contentType: row.content_type ?? "application/octet-stream",
+      content: Buffer.from(row.content_base64, "base64")
+    };
+  }
+
+  if (typeof row.content_text === "string" && row.content_text.length > 0) {
+    return {
+      filename: buildTextFallbackFilename(row.filename),
+      contentType: "text/plain; charset=utf-8",
+      content: Buffer.from(row.content_text, "utf8")
+    };
+  }
+
+  return null;
 }
 
 export async function analyzeWorkItem(
@@ -496,6 +564,8 @@ async function listFilesForWorkItems(
         filename,
         content_type,
         size_bytes,
+        content_text,
+        content_base64,
         uploaded_by_user_id,
         created_at
       FROM work_item_files
@@ -602,9 +672,22 @@ function mapWorkItemFileRow(row: Record<string, unknown>): WorkItemFile {
     filename: row.filename as string,
     contentType: (row.content_type as string | null) ?? undefined,
     sizeBytes: row.size_bytes ? Number(row.size_bytes) : undefined,
+    hasFileContent:
+      (typeof row.content_base64 === "string" && row.content_base64.length > 0) ||
+      (typeof row.content_text === "string" && row.content_text.length > 0),
     uploadedByUserId: (row.uploaded_by_user_id as string | null) ?? undefined,
     createdAt: row.created_at as string
   };
+}
+
+function buildTextFallbackFilename(filename: string): string {
+  const trimmed = filename.trim();
+
+  if (trimmed.toLowerCase().endsWith(".txt")) {
+    return trimmed;
+  }
+
+  return `${trimmed}.txt`;
 }
 
 function mapAiAnalysisRow(row: Record<string, unknown>): AiAnalysis {
