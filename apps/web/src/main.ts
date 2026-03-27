@@ -3158,6 +3158,14 @@ async function handleDeleteWorkItem(workItemId: string | null): Promise<void> {
     return;
   }
 
+  if (
+    !window.confirm(
+      "Delete this work item only if it was created by mistake and has no assignment or task history. This cannot be undone."
+    )
+  ) {
+    return;
+  }
+
   setStatus("Deleting work item...", "loading");
 
   try {
@@ -5141,7 +5149,7 @@ function renderPrincipalReviewWorkspace(): void {
       </div>
       <div class="auth-actions">
         <button id="save-principal-review-button" class="primary-button" type="button">
-          Save Principal Decision
+          Save Routing Decision
         </button>
         <button id="open-principal-review-work-item-button" class="secondary-button" type="button">
           Open Work Item
@@ -5156,6 +5164,9 @@ function renderPrincipalReviewWorkspace(): void {
             : ""
         }
       </div>
+      <p class="workflow-inline-hint workflow-inline-hint-strong">
+        Saving here only confirms the principal routing choice. The department handoff still happens in Step 3 below.
+      </p>
     </article>
     ${buildPrincipalWorkflowHtml(selectedItem)}
   `;
@@ -5199,6 +5210,24 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
       : currentAssignments.find(
           (assignment) => assignment.workItemId === assignmentFocusItem.workItem.id
         ) ?? null;
+  const assignmentFocusLeadDepartment =
+    assignmentFocusItem?.workItem.leadDepartmentId ??
+    assignmentFocusItem?.workItem.departmentId ??
+    "not chosen";
+  const handoffAttentionTitle = assignmentFocusItem
+    ? assignmentFocusRecord
+      ? "Assignment already dispatched"
+      : "Ready to dispatch this work item"
+    : waitingAssignmentItems.length > 0
+      ? "Choose a record and dispatch its handoff"
+      : "No records are waiting for assignment";
+  const handoffAttentionCopy = assignmentFocusItem
+    ? assignmentFocusRecord
+      ? "The routing decision is saved. Open the department task to monitor acceptance or execution."
+      : `Routing is complete. Next step: create the handoff for ${assignmentFocusLeadDepartment}.`
+    : waitingAssignmentItems.length > 0
+      ? "Select a routed record from the left queue, review the summary, then dispatch the department handoff."
+      : "Once principal routing is saved with “Prepare for assignment”, the record will appear here.";
 
   const waitingAssignmentHtml =
     waitingAssignmentItems.length > 0
@@ -5206,12 +5235,19 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
           .map(
             (item) => `
               <button
-                class="queue-item-button"
+                class="queue-item-button queue-item-button-compact"
                 type="button"
                 data-workflow-assignment-work-item-id="${escapeHtml(item.workItem.id)}"
               >
-                <strong>${escapeHtml(item.workItem.title)}</strong>
-                <span>${escapeHtml(item.workItem.routingPriority ?? "normal")}</span>
+                <span class="queue-item-copy">
+                  <strong>${escapeHtml(item.workItem.title)}</strong>
+                  <span>${escapeHtml(getNextWorkItemAction(item.workItem.status))}</span>
+                </span>
+                <span class="queue-item-meta">
+                  <span class="status-badge status-${escapeHtml(item.workItem.status)}">
+                    ${escapeHtml(item.workItem.routingPriority ?? "normal")}
+                  </span>
+                </span>
               </button>
             `
           )
@@ -5224,30 +5260,33 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
 
   const assignmentFocusHtml = assignmentFocusItem
     ? `
-        <article class="admin-item">
-          <div class="task-card-row">
-            <strong>${escapeHtml(assignmentFocusItem.workItem.title)}</strong>
+        <article class="admin-item handoff-focus-card">
+          <div class="handoff-focus-header">
+            <div>
+              <strong>${escapeHtml(assignmentFocusItem.workItem.title)}</strong>
+              <p class="workflow-inline-hint">
+                ${escapeHtml(getNextWorkItemAction(assignmentFocusItem.workItem.status))}
+              </p>
+            </div>
             <span class="status-badge status-${escapeHtml(assignmentFocusItem.workItem.status)}">
               ${escapeHtml(assignmentFocusItem.workItem.status)}
             </span>
           </div>
-          <p><strong>Lead department:</strong> ${escapeHtml(
-            assignmentFocusItem.workItem.leadDepartmentId ??
-              assignmentFocusItem.workItem.departmentId ??
-              "not chosen"
-          )}</p>
-          <p><strong>Priority:</strong> ${escapeHtml(
-            assignmentFocusItem.workItem.routingPriority ?? "normal"
-          )}</p>
-          <p><strong>Output requirement:</strong> ${escapeHtml(
-            assignmentFocusItem.workItem.outputRequirement ?? "not specified"
-          )}</p>
-          <p><strong>Current assignment:</strong> ${escapeHtml(
-            assignmentFocusRecord?.mainDepartmentId ?? "not created"
-          )}</p>
-          <div class="auth-actions">
+          <div class="handoff-focus-grid">
+            <p><strong>Lead department:</strong> ${escapeHtml(assignmentFocusLeadDepartment)}</p>
+            <p><strong>Priority:</strong> ${escapeHtml(
+              assignmentFocusItem.workItem.routingPriority ?? "normal"
+            )}</p>
+            <p><strong>Output requirement:</strong> ${escapeHtml(
+              assignmentFocusItem.workItem.outputRequirement ?? "not specified"
+            )}</p>
+            <p><strong>Current assignment:</strong> ${escapeHtml(
+              assignmentFocusRecord?.mainDepartmentId ?? "not created yet"
+            )}</p>
+          </div>
+          <div class="auth-actions compact-action-bar">
             <button
-              class="secondary-button"
+              class="primary-button"
               type="button"
               data-workflow-open-record-id="${escapeHtml(assignmentFocusItem.workItem.id)}"
             >
@@ -5264,7 +5303,11 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
                       Open Department Task
                     </button>
                   `
-                : ""
+                : `
+                    <span class="workflow-mini-note">
+                      Dispatch the assignment in this workspace to create the department task.
+                    </span>
+                  `
             }
           </div>
         </article>
@@ -5326,11 +5369,35 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
         </div>
       </div>
       <p class="intro workflow-note">
-        Once a record is routed, stay in this same workspace to create the department handoff and monitor acceptance.
+        After principal routing is saved, dispatch the department handoff here and monitor whether the unit accepts it.
       </p>
+      <article class="workflow-attention-card">
+        <div>
+          <p class="eyebrow">Next Step</p>
+          <h4>${escapeHtml(handoffAttentionTitle)}</h4>
+          <p>${escapeHtml(handoffAttentionCopy)}</p>
+        </div>
+        ${
+          assignmentFocusItem
+            ? `
+                <div class="workflow-attention-meta">
+                  <span class="status-badge status-${escapeHtml(assignmentFocusItem.workItem.status)}">
+                    ${escapeHtml(assignmentFocusItem.workItem.status)}
+                  </span>
+                  <span class="workflow-attention-tag">
+                    Lead: ${escapeHtml(assignmentFocusLeadDepartment)}
+                  </span>
+                </div>
+              `
+            : ""
+        }
+      </article>
       <div class="workflow-columns">
         <div class="workflow-column">
-          <p class="detail-label">Waiting Assignment</p>
+          <div class="workflow-subhead">
+            <p class="detail-label">Waiting Assignment</p>
+            <span class="workflow-count-chip">${waitingAssignmentItems.length}</span>
+          </div>
           <div class="work-item-queue">${waitingAssignmentHtml}</div>
         </div>
         <div class="workflow-column">
@@ -5339,7 +5406,10 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
         </div>
       </div>
       <div class="workflow-ledger">
-        <p class="detail-label">Recent Assignment Ledger</p>
+        <div class="workflow-subhead">
+          <p class="detail-label">Recent Assignment Ledger</p>
+          <span class="workflow-mini-note">Latest handoffs and acceptance state</span>
+        </div>
         <div class="admin-list">${assignmentLedgerHtml}</div>
       </div>
     </section>
@@ -5943,6 +6013,22 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                     `
                     : ""
                 }
+                ${
+                  isAdminLikeSession()
+                    ? `
+                      <button
+                        id="cancel-assignment-button"
+                        class="secondary-button danger-button"
+                        type="button"
+                      >
+                        Cancel Assignment
+                      </button>
+                      <span class="workflow-mini-note">
+                        Only use this when the handoff was created by mistake and the department has not started execution.
+                      </span>
+                    `
+                    : ""
+                }
               </div>
             `
             : ""
@@ -6136,6 +6222,12 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     .querySelector<HTMLButtonElement>("#approve-response-button")
     ?.addEventListener("click", async () => {
       await handleApproveTaskResponse(currentAssignment?.taskId ?? null);
+    });
+
+  workItemModalBody
+    .querySelector<HTMLButtonElement>("#cancel-assignment-button")
+    ?.addEventListener("click", async () => {
+      await handleCancelAssignment(currentAssignment?.id ?? null);
     });
 
   workItemModalBody
@@ -6861,6 +6953,52 @@ async function handleApproveTaskResponse(taskId: string | null): Promise<void> {
       error instanceof Error
         ? error.message
         : "Something went wrong while approving the response.",
+      "error"
+    );
+  }
+}
+
+async function handleCancelAssignment(assignmentId: string | null): Promise<void> {
+  if (!assignmentId) {
+    setStatus("No assignment is linked to this record.", "error");
+    return;
+  }
+
+  if (
+    !window.confirm(
+      "Cancel this assignment only if it was created by mistake and the department has not started execution. The work item will go back to waiting assignment."
+    )
+  ) {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/assignments/${encodeURIComponent(assignmentId)}/cancel`,
+      {
+        method: "POST",
+        headers: buildApiHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await readApiError(response, "The assignment could not be cancelled.")
+      );
+    }
+
+    await Promise.all([
+      loadAssignments(),
+      loadTasks(),
+      loadWorkItems(),
+      loadNotifications()
+    ]);
+    setStatus("Assignment cancelled. The record is back in waiting assignment.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while cancelling the assignment.",
       "error"
     );
   }

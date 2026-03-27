@@ -722,6 +722,10 @@ h3 {
   font-size: 11px;
 }
 
+.workflow-inline-hint-strong {
+  margin-top: 4px;
+}
+
 .detail-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -961,6 +965,58 @@ body.modal-open {
   gap: 8px;
 }
 
+.workflow-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workflow-attention-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid #b6e3ff;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f4faff 0%, #eef6ff 100%);
+}
+
+.workflow-attention-card h4 {
+  margin: 2px 0 6px;
+  font-size: 1rem;
+  color: #0a3069;
+}
+
+.workflow-attention-card p {
+  margin: 0;
+  color: #0a3069;
+  line-height: 1.45;
+  font-size: 13px;
+}
+
+.workflow-attention-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.workflow-attention-tag,
+.workflow-count-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid #d0d7de;
+  background: #ffffff;
+  color: #57606a;
+}
+
 @media (min-width: 1080px) {
   .workflow-columns {
     grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
@@ -1001,6 +1057,34 @@ body.modal-open {
   transform: translateY(-2px);
   border-color: #0969da;
   box-shadow: 0 12px 24px rgba(31, 35, 40, 0.08);
+}
+
+.queue-item-button-compact {
+  align-items: flex-start;
+  padding: 9px 10px;
+  gap: 10px;
+}
+
+.queue-item-copy {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  min-width: 0;
+}
+
+.queue-item-copy strong {
+  line-height: 1.3;
+}
+
+.queue-item-copy span:last-child {
+  color: #57606a;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.queue-item-meta {
+  display: flex;
+  align-items: center;
 }
 
 .mock-user-active {
@@ -1046,6 +1130,38 @@ body.modal-open {
   font-size: 13px;
 }
 
+.handoff-focus-card {
+  gap: 10px;
+}
+
+.handoff-focus-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.handoff-focus-header > div {
+  display: grid;
+  gap: 6px;
+}
+
+.handoff-focus-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.handoff-focus-grid p {
+  font-size: 13px;
+}
+
+.workflow-mini-note {
+  color: #57606a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .admin-list .admin-item,
 .work-item-queue .admin-item {
   gap: 6px;
@@ -1062,6 +1178,23 @@ body.modal-open {
 .overview-grid .admin-list .admin-item,
 .overview-grid .admin-list .attention-item-button {
   padding: 10px 12px;
+}
+
+@media (max-width: 860px) {
+  .workflow-attention-card,
+  .handoff-focus-header,
+  .workflow-subhead {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-attention-meta {
+    justify-content: flex-start;
+  }
+
+  .handoff-focus-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .result-meta {

@@ -11,6 +11,12 @@ export interface AssignmentDetail {
   notifications: Notification[];
 }
 
+export interface CancelAssignmentResult {
+  assignmentId: string;
+  taskId: string;
+  workItemId: string;
+}
+
 export interface CreateAssignmentInput {
   workItemId: string;
   mainDepartmentId: string;
@@ -114,6 +120,122 @@ export async function requestAssignmentAdjustment(
   );
 
   return result.rows.length > 0 ? mapAssignmentRow(result.rows[0]) : null;
+}
+
+export async function cancelAssignment(
+  assignmentId: string,
+  accessContext: TaskAccessContext
+): Promise<CancelAssignmentResult | null> {
+  const detail = await getAssignmentById(assignmentId, accessContext);
+
+  if (!detail) {
+    return null;
+  }
+
+  const pool = getDbPool();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const taskStateResult = await client.query(
+      `
+        SELECT
+          status,
+          progress_percent,
+          completed_at
+        FROM tasks
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [detail.assignment.taskId]
+    );
+
+    const taskState = taskStateResult.rows[0];
+
+    if (
+      taskState &&
+      ((taskState.status as string) !== "pending" ||
+        Number(taskState.progress_percent ?? 0) > 0 ||
+        taskState.completed_at)
+    ) {
+      await client.query("ROLLBACK");
+      throw new Error(
+        "This assignment already has execution history. It cannot be cancelled anymore."
+      );
+    }
+
+    await client.query(
+      `
+        DELETE FROM notifications
+        WHERE assignment_id = $1
+      `,
+      [assignmentId]
+    );
+
+    await client.query(
+      `
+        DELETE FROM submission_reviews
+        WHERE task_id = $1
+      `,
+      [detail.assignment.taskId]
+    );
+
+    await client.query(
+      `
+        DELETE FROM task_updates
+        WHERE task_id = $1
+      `,
+      [detail.assignment.taskId]
+    );
+
+    await client.query(
+      `
+        DELETE FROM task_results
+        WHERE task_id = $1
+      `,
+      [detail.assignment.taskId]
+    );
+
+    await client.query(
+      `
+        DELETE FROM tasks
+        WHERE id = $1
+      `,
+      [detail.assignment.taskId]
+    );
+
+    await client.query(
+      `
+        DELETE FROM assignments
+        WHERE id = $1
+      `,
+      [assignmentId]
+    );
+
+    await client.query(
+      `
+        UPDATE work_items
+        SET status = 'waiting_assignment',
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+      [detail.assignment.workItemId]
+    );
+
+    await client.query("COMMIT");
+
+    return {
+      assignmentId,
+      taskId: detail.assignment.taskId,
+      workItemId: detail.assignment.workItemId
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function createAssignment(

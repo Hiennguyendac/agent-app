@@ -505,14 +505,27 @@ export async function deleteWorkItem(
       SELECT 1
       FROM assignments
       WHERE work_item_id = $1
-        AND active = true
       LIMIT 1
     `,
     [workItemId]
   );
 
   if (assignmentCheck.rows.length > 0) {
-    throw new Error("Assigned work items cannot be deleted");
+    throw new Error("Work items with assignment history cannot be deleted");
+  }
+
+  const taskHistoryCheck = await getDbPool().query(
+    `
+      SELECT 1
+      FROM tasks
+      WHERE work_item_id = $1
+      LIMIT 1
+    `,
+    [workItemId]
+  );
+
+  if (taskHistoryCheck.rows.length > 0) {
+    throw new Error("Work items with task history cannot be deleted");
   }
 
   await getDbPool().query(`DELETE FROM work_item_files WHERE work_item_id = $1`, [workItemId]);

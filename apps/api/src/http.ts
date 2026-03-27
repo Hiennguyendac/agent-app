@@ -67,6 +67,7 @@ import {
 } from "./store.js";
 import {
   acceptAssignment,
+  cancelAssignment,
   createAssignment,
   createAssignmentNotification,
   getAssignmentById,
@@ -147,6 +148,7 @@ export async function handleRequest(
   const documentCreateWorkItemTargetId =
     getDocumentCreateWorkItemTargetIdFromUrl(url);
   const assignmentId = getAssignmentIdFromUrl(url);
+  const assignmentCancelId = getAssignmentCancelIdFromUrl(url);
   const taskAcceptId = getTaskAcceptIdFromUrl(url);
   const taskRejectId = getTaskRejectIdFromUrl(url);
   const taskUpdatesId = getTaskUpdatesIdFromUrl(url);
@@ -2039,6 +2041,74 @@ export async function handleRequest(
     return;
   }
 
+  if (method === "POST" && assignmentCancelId) {
+    if (!(accessContext.role === "principal" || accessContext.role === "admin")) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "Principal or admin access required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          assignmentId: assignmentCancelId
+        }
+      );
+      return;
+    }
+
+    const cancelled = await cancelAssignment(assignmentCancelId, accessContext);
+
+    if (!cancelled) {
+      sendJson(
+        res,
+        404,
+        {
+          error: "Assignment not found"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          assignmentId: assignmentCancelId
+        }
+      );
+      return;
+    }
+
+    logAuditEvent("assignment.cancelled", {
+      userId: accessContext.userId,
+      assignmentId: cancelled.assignmentId,
+      taskId: cancelled.taskId,
+      workItemId: cancelled.workItemId
+    });
+
+    sendJson(
+      res,
+      200,
+      {
+        success: true,
+        assignmentId: cancelled.assignmentId,
+        taskId: cancelled.taskId,
+        workItemId: cancelled.workItemId
+      },
+      startedAtMs,
+      method,
+      url,
+      {
+        userId: accessContext.userId,
+        assignmentId: cancelled.assignmentId,
+        taskId: cancelled.taskId,
+        workItemId: cancelled.workItemId
+      }
+    );
+    return;
+  }
+
   if (method === "GET" && pathname === "/assignments") {
     const workItemIdFilter =
       parsedUrl.searchParams.get("work_item_id")?.trim() || undefined;
@@ -3016,6 +3086,11 @@ function getWorkItemAssignTargetIdFromUrl(url: string): string | null {
 
 function getAssignmentIdFromUrl(url: string): string | null {
   const match = /^\/assignments\/([^/]+)$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getAssignmentCancelIdFromUrl(url: string): string | null {
+  const match = /^\/assignments\/([^/]+)\/cancel$/.exec(url);
   return match?.[1] ?? null;
 }
 
