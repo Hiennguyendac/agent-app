@@ -6494,22 +6494,26 @@ async function handleSaveWorkItem(workItemId: string): Promise<void> {
 }
 
 async function handleAssignWorkItem(workItemId: string): Promise<void> {
+  const assignmentScope =
+    !workItemModal.classList.contains("hidden") && workItemModalBody.childElementCount > 0
+      ? workItemModalBody
+      : workItemDetailBody;
   const mainDepartmentInput =
-    workItemDetailBody.querySelector<HTMLSelectElement>("#assignment-main-department");
+    assignmentScope.querySelector<HTMLSelectElement>("#assignment-main-department");
   const coordinatingDepartmentsInput =
-    workItemDetailBody.querySelector<HTMLInputElement>(
+    assignmentScope.querySelector<HTMLInputElement>(
       "#assignment-coordinating-departments"
     );
   const deadlineInput =
-    workItemDetailBody.querySelector<HTMLInputElement>("#assignment-deadline");
+    assignmentScope.querySelector<HTMLInputElement>("#assignment-deadline");
   const priorityInput =
-    workItemDetailBody.querySelector<HTMLSelectElement>("#assignment-priority");
+    assignmentScope.querySelector<HTMLSelectElement>("#assignment-priority");
   const outputRequirementInput =
-    workItemDetailBody.querySelector<HTMLTextAreaElement>(
+    assignmentScope.querySelector<HTMLTextAreaElement>(
       "#assignment-output-requirement"
     );
   const noteInput =
-    workItemDetailBody.querySelector<HTMLTextAreaElement>("#assignment-note");
+    assignmentScope.querySelector<HTMLTextAreaElement>("#assignment-note");
 
   if (
     !mainDepartmentInput ||
