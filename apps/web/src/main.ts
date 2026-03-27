@@ -457,6 +457,9 @@ app.innerHTML = `
       </header>
 
       <p id="status-message" class="status-message" aria-live="polite"></p>
+      <p id="context-status-message" class="status-message status-message-context hidden" aria-live="polite"></p>
+      <section id="workflow-stepper" class="workflow-stepper panel" aria-label="Workflow steps"></section>
+      <section id="workflow-guidance" class="workflow-guidance panel" aria-label="Next actions"></section>
 
       <section id="overview-view" class="content-view">
         <div class="overview-grid">
@@ -514,7 +517,7 @@ app.innerHTML = `
               <form id="document-form" class="task-form disclosure-form" novalidate>
                 <div class="field">
                   <label for="document-file">Upload school document</label>
-                  <input id="document-file" name="documentFile" type="file" />
+                  <input id="document-file" name="documentFile" type="file" multiple />
                 </div>
                 <div class="field">
                   <label for="document-title">Document note</label>
@@ -524,7 +527,7 @@ app.innerHTML = `
                   <label for="document-metadata">Metadata JSON</label>
                   <textarea id="document-metadata" name="documentMetadata" rows="3" placeholder='{"source":"front-office","channel":"email"}'></textarea>
                 </div>
-                <button id="create-document-button" class="primary-button" type="submit">Upload Document</button>
+                <button id="create-document-button" class="primary-button" type="submit">Upload Document(s)</button>
               </form>
             </details>
           </div>
@@ -891,11 +894,77 @@ app.innerHTML = `
         </div>
       </section>
     </section>
+
+    <div id="task-modal" class="task-modal hidden" aria-hidden="true">
+      <button
+        id="task-modal-backdrop"
+        class="task-modal-backdrop"
+        type="button"
+        aria-label="Close task detail"
+      ></button>
+      <section
+        class="task-modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-modal-title"
+      >
+        <header class="task-modal-header">
+          <div class="task-modal-heading">
+            <p class="eyebrow">Task Detail</p>
+            <h3 id="task-modal-title">Task Detail</h3>
+            <p id="task-modal-meta" class="result-meta"></p>
+          </div>
+          <button
+            id="task-modal-close"
+            class="secondary-button"
+            type="button"
+            aria-label="Close task detail"
+          >
+            Close
+          </button>
+        </header>
+        <div id="task-modal-body" class="task-modal-body"></div>
+      </section>
+    </div>
+
+    <div id="document-modal" class="task-modal hidden" aria-hidden="true">
+      <button
+        id="document-modal-backdrop"
+        class="task-modal-backdrop"
+        type="button"
+        aria-label="Close document detail"
+      ></button>
+      <section
+        class="task-modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="document-modal-title"
+      >
+        <header class="task-modal-header">
+          <div class="task-modal-heading">
+            <p class="eyebrow">Document Detail</p>
+            <h3 id="document-modal-title">Document Detail</h3>
+            <p id="document-modal-meta" class="result-meta"></p>
+          </div>
+          <button
+            id="document-modal-close"
+            class="secondary-button"
+            type="button"
+            aria-label="Close document detail"
+          >
+            Close
+          </button>
+        </header>
+        <div id="document-modal-body" class="task-modal-body"></div>
+      </section>
+    </div>
   </main>
 `;
 
 const form = document.querySelector<HTMLFormElement>("#task-form")!;
 const statusMessage = document.querySelector<HTMLParagraphElement>("#status-message")!;
+const contextStatusMessage =
+  document.querySelector<HTMLParagraphElement>("#context-status-message")!;
 const taskList = document.querySelector<HTMLDivElement>("#task-list")!;
 const legacyTaskList =
   document.querySelector<HTMLDivElement>("#legacy-task-list")!;
@@ -969,6 +1038,17 @@ const documentDetailMeta =
   document.querySelector<HTMLParagraphElement>("#document-detail-meta")!;
 const documentDetailBody =
   document.querySelector<HTMLDivElement>("#document-detail-body")!;
+const documentModal = document.querySelector<HTMLElement>("#document-modal")!;
+const documentModalBackdrop =
+  document.querySelector<HTMLButtonElement>("#document-modal-backdrop")!;
+const documentModalClose =
+  document.querySelector<HTMLButtonElement>("#document-modal-close")!;
+const documentModalTitle =
+  document.querySelector<HTMLHeadingElement>("#document-modal-title")!;
+const documentModalMeta =
+  document.querySelector<HTMLParagraphElement>("#document-modal-meta")!;
+const documentModalBody =
+  document.querySelector<HTMLDivElement>("#document-modal-body")!;
 const workItemForm = document.querySelector<HTMLFormElement>("#work-item-form")!;
 const workItemTitleInput =
   document.querySelector<HTMLInputElement>("#work-item-title")!;
@@ -1005,6 +1085,10 @@ const viewEyebrow = document.querySelector<HTMLParagraphElement>("#view-eyebrow"
 const viewTitle = document.querySelector<HTMLHeadingElement>("#view-title")!;
 const viewDescription =
   document.querySelector<HTMLParagraphElement>("#view-description")!;
+const workflowStepper =
+  document.querySelector<HTMLElement>("#workflow-stepper")!;
+const workflowGuidance =
+  document.querySelector<HTMLElement>("#workflow-guidance")!;
 const overviewView = document.querySelector<HTMLElement>("#overview-view")!;
 const documentsView = document.querySelector<HTMLElement>("#documents-view")!;
 const workItemsView = document.querySelector<HTMLElement>("#work-items-view")!;
@@ -1042,10 +1126,22 @@ const departmentTaskDetailMeta =
   document.querySelector<HTMLParagraphElement>("#department-task-detail-meta")!;
 const departmentTaskDetailBody =
   document.querySelector<HTMLDivElement>("#department-task-detail-body")!;
+const taskModal = document.querySelector<HTMLElement>("#task-modal")!;
+const taskModalBackdrop =
+  document.querySelector<HTMLButtonElement>("#task-modal-backdrop")!;
+const taskModalClose =
+  document.querySelector<HTMLButtonElement>("#task-modal-close")!;
+const taskModalTitle =
+  document.querySelector<HTMLHeadingElement>("#task-modal-title")!;
+const taskModalMeta =
+  document.querySelector<HTMLParagraphElement>("#task-modal-meta")!;
+const taskModalBody =
+  document.querySelector<HTMLDivElement>("#task-modal-body")!;
 
 if (
   !form ||
   !statusMessage ||
+  !contextStatusMessage ||
   !taskList ||
   !legacyTaskList ||
   !refreshButton ||
@@ -1086,6 +1182,12 @@ if (
   !documentDetailTitle ||
   !documentDetailMeta ||
   !documentDetailBody ||
+  !documentModal ||
+  !documentModalBackdrop ||
+  !documentModalClose ||
+  !documentModalTitle ||
+  !documentModalMeta ||
+  !documentModalBody ||
   !workItemForm ||
   !workItemTitleInput ||
   !workItemDescriptionInput ||
@@ -1108,6 +1210,8 @@ if (
   !viewEyebrow ||
   !viewTitle ||
   !viewDescription ||
+  !workflowStepper ||
+  !workflowGuidance ||
   !overviewView ||
   !documentsView ||
   !workItemsView ||
@@ -1134,6 +1238,12 @@ if (
   !departmentTaskDetailTitle ||
   !departmentTaskDetailMeta ||
   !departmentTaskDetailBody ||
+  !taskModal ||
+  !taskModalBackdrop ||
+  !taskModalClose ||
+  !taskModalTitle ||
+  !taskModalMeta ||
+  !taskModalBody ||
   !createUserUsernameInput ||
   !createUserDisplayNameInput ||
   !createUserPasswordInput ||
@@ -1182,6 +1292,31 @@ navButtons.forEach((button) => {
     currentView = nextView;
     renderCurrentView();
   });
+});
+
+taskModalBackdrop.addEventListener("click", () => {
+  closeTaskModal();
+});
+
+taskModalClose.addEventListener("click", () => {
+  closeTaskModal();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !taskModal.classList.contains("hidden")) {
+    closeTaskModal();
+  }
+  if (event.key === "Escape" && !documentModal.classList.contains("hidden")) {
+    closeDocumentModal();
+  }
+});
+
+documentModalBackdrop.addEventListener("click", () => {
+  closeDocumentModal();
+});
+
+documentModalClose.addEventListener("click", () => {
+  closeDocumentModal();
 });
 
 workItemSearchInput.addEventListener("input", () => {
@@ -1704,6 +1839,7 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
           <p><strong>Assignment Status:</strong> ${escapeHtml(getAssignmentStatusForTask(item.task.assignmentId))}</p>
           <p><strong>Progress:</strong> ${escapeHtml(String(item.task.progressPercent ?? 0))}%</p>
           <p><strong>Linked Work Item:</strong> ${escapeHtml(item.task.workItemId ?? "none")}</p>
+          <p class="workflow-inline-hint"><strong>Next:</strong> ${escapeHtml(getNextTaskAction(item.task))}</p>
           <div class="auth-actions">
             <button
               class="secondary-button"
@@ -1810,7 +1946,7 @@ function renderTaskList(tasks: TaskListItem[]): void {
               type="button"
               data-task-id="${escapeHtml(task.task.id)}"
             >
-              ${selectedTaskId === task.task.id ? "Hide" : "Open"}
+              ${selectedTaskId === task.task.id ? "Close" : "Open Task"}
             </button>
           </div>
         </article>
@@ -1868,15 +2004,18 @@ function renderLegacyTaskList(tasks: TaskListItem[]): void {
 }
 
 function renderDepartmentTaskDetail(taskItem: TaskListItem): void {
-  departmentTaskDetail.classList.remove("hidden");
+  departmentTaskDetail.classList.add("hidden");
   departmentTaskDetailTitle.textContent = taskItem.task.title;
   departmentTaskDetailMeta.textContent = [
     `Status: ${taskItem.task.status}`,
     `Department: ${taskItem.task.ownerDepartmentId ?? "none"}`,
     `Assignment: ${taskItem.task.assignmentId ?? "none"}`
   ].join(" | ");
-  departmentTaskDetailBody.innerHTML = renderTaskDetail(taskItem);
-  bindTaskListInteractions(departmentTaskDetailBody);
+  taskModalTitle.textContent = taskItem.task.title;
+  taskModalMeta.textContent = departmentTaskDetailMeta.textContent;
+  taskModalBody.innerHTML = renderTaskDetail(taskItem);
+  bindTaskListInteractions(taskModalBody);
+  openTaskModal();
 }
 
 function hideDepartmentTaskDetail(): void {
@@ -1884,6 +2023,24 @@ function hideDepartmentTaskDetail(): void {
   departmentTaskDetailTitle.textContent = "Task Detail";
   departmentTaskDetailMeta.textContent = "";
   departmentTaskDetailBody.innerHTML = "";
+  taskModalTitle.textContent = "Task Detail";
+  taskModalMeta.textContent = "";
+  taskModalBody.innerHTML = "";
+  taskModal.classList.add("hidden");
+  taskModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+}
+
+function openTaskModal(): void {
+  taskModal.classList.remove("hidden");
+  taskModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeTaskModal(): void {
+  selectedTaskId = null;
+  hideDepartmentTaskDetail();
+  renderTaskList(currentTaskItems);
 }
 
 function bindTaskListInteractions(container: HTMLElement): void {
@@ -2106,7 +2263,9 @@ function applySelectedTemplate(templateKey: string): void {
 async function selectTaskById(taskId: string | null): Promise<void> {
   selectedTaskId = selectedTaskId === taskId ? null : taskId;
   syncSelectedTaskDetail(currentTaskItems);
-  await refreshSelectedTaskContext();
+  if (selectedTaskId) {
+    await refreshSelectedTaskContext();
+  }
   renderTaskList(currentTaskItems);
 }
 
@@ -2119,10 +2278,12 @@ async function focusTaskById(taskId: string | null): Promise<void> {
   syncSelectedTaskDetail(currentTaskItems);
   await refreshSelectedTaskContext();
   renderTaskList(currentTaskItems);
-  departmentTaskDetail.scrollIntoView({
-    behavior: "smooth",
-    block: "start"
-  });
+  document
+    .querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`)
+    ?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest"
+    });
 }
 
 function syncSelectedTaskDetail(taskItems: TaskListItem[]): void {
@@ -2585,6 +2746,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                     id="task-response-file-${escapeHtml(taskItem.task.id)}"
                     class="hidden"
                     type="file"
+                    multiple
                     data-response-work-item-id="${escapeHtml(linkedWorkItem.workItem.id)}"
                   />
                   <button
@@ -2948,6 +3110,45 @@ type StatusTone = "info" | "loading" | "success" | "error";
 function setStatus(message: string, tone: StatusTone = "info"): void {
   statusMessage.textContent = message;
   statusMessage.dataset.state = tone;
+  contextStatusMessage.textContent = message;
+  contextStatusMessage.dataset.state = tone;
+  contextStatusMessage.classList.toggle("hidden", message.trim().length === 0);
+
+  const host = resolveContextStatusHost();
+
+  if (host && contextStatusMessage.parentElement !== host) {
+    host.prepend(contextStatusMessage);
+  }
+}
+
+function resolveContextStatusHost(): HTMLElement | null {
+  if (!taskModal.classList.contains("hidden")) {
+    return taskModalBody;
+  }
+
+  if (!documentModal.classList.contains("hidden")) {
+    return documentModalBody;
+  }
+
+  const viewMap: Record<typeof currentView, HTMLElement> = {
+    overview: overviewView,
+    documents: documentsView,
+    "work-items": workItemsView,
+    assignments: assignmentsView,
+    "department-tasks": departmentTasksView,
+    approvals: approvalsView,
+    reports: reportsView,
+    admin: adminView,
+    account: accountView,
+    legacy: legacyView
+  };
+
+  const activeView = viewMap[currentView];
+
+  return (
+    activeView.querySelector<HTMLElement>(".panel, .result-card, .account-card, .admin-card") ??
+    activeView
+  );
 }
 
 function getTitleValidationError(title: string): string | null {
@@ -3159,11 +3360,19 @@ function buildApiHeaders(
 ): Record<string, string> {
   const headers = { ...extraHeaders };
 
-  if (currentMockUserId.length > 0) {
+  if (!currentSessionUserId && isSafeHeaderValue(currentMockUserId)) {
     headers["x-user-id"] = currentMockUserId;
   }
 
   return headers;
+}
+
+function isSafeHeaderValue(value: string): boolean {
+  if (value.trim().length === 0) {
+    return false;
+  }
+
+  return /^[\x20-\x7E]+$/.test(value);
 }
 
 function loadMockUserId(): string {
@@ -3806,7 +4015,7 @@ function renderDocumentList(items: DocumentListItem[]): void {
               type="button"
               data-document-id="${escapeHtml(item.document.id)}"
             >
-              ${selectedDocumentId === item.document.id ? "Hide" : "Open"}
+              ${selectedDocumentId === item.document.id ? "Close" : "Open"}
             </button>
           </div>
         </article>
@@ -3906,15 +4115,16 @@ async function openDocumentWithTab(
 
 function renderDocumentDetail(item: DocumentListItem): void {
   const isAnalyzing = currentAnalyzingDocumentId === item.document.id;
-  documentDetail.classList.remove("hidden");
+  documentDetail.classList.add("hidden");
   documentDetailTitle.textContent = item.document.filename;
   documentDetailMeta.textContent = [
     `OCR: ${item.document.ocrStatus}`,
     `Uploaded: ${formatDate(item.document.createdAt)}`,
     `Work Item: ${item.document.createdWorkItemId ?? "not created"}`
   ].join(" | ");
-
-  documentDetailBody.innerHTML = `
+  documentModalTitle.textContent = item.document.filename;
+  documentModalMeta.textContent = documentDetailMeta.textContent;
+  documentModalBody.innerHTML = `
     <div class="detail-tabs">
       <button class="tab-button is-active" type="button" data-document-tab="summary">Summary</button>
       <button class="tab-button" type="button" data-document-tab="metadata">Metadata</button>
@@ -3979,7 +4189,7 @@ function renderDocumentDetail(item: DocumentListItem): void {
     </section>
   `;
 
-  documentDetailBody
+  documentModalBody
     .querySelectorAll<HTMLButtonElement>("[data-document-tab]")
     .forEach((button) => {
       button.addEventListener("click", () => {
@@ -3987,18 +4197,19 @@ function renderDocumentDetail(item: DocumentListItem): void {
       });
     });
 
-  documentDetailBody
+  documentModalBody
     .querySelector<HTMLButtonElement>("#analyze-document-button")
     ?.addEventListener("click", async () => {
       await handleAnalyzeDocument(item.document.id);
     });
 
-  documentDetailBody
+  documentModalBody
     .querySelector<HTMLButtonElement>("#create-document-work-item-button")
     ?.addEventListener("click", async () => {
       await handleCreateWorkItemFromDocument(item.document.id);
     });
 
+  openDocumentModal();
   setActiveDocumentDetailTab("summary");
 }
 
@@ -4007,20 +4218,38 @@ function hideDocumentDetail(): void {
   documentDetailTitle.textContent = "Document Detail";
   documentDetailMeta.textContent = "";
   documentDetailBody.innerHTML = "";
+  documentModalTitle.textContent = "Document Detail";
+  documentModalMeta.textContent = "";
+  documentModalBody.innerHTML = "";
+  documentModal.classList.add("hidden");
+  documentModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
 }
 
 function setActiveDocumentDetailTab(tabName: string): void {
-  documentDetailBody
+  documentModalBody
     .querySelectorAll<HTMLButtonElement>("[data-document-tab]")
     .forEach((button) => {
       button.classList.toggle("is-active", button.dataset.documentTab === tabName);
     });
 
-  documentDetailBody
+  documentModalBody
     .querySelectorAll<HTMLElement>("[data-document-panel]")
     .forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.documentPanel !== tabName);
     });
+}
+
+function openDocumentModal(): void {
+  documentModal.classList.remove("hidden");
+  documentModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeDocumentModal(): void {
+  selectedDocumentId = null;
+  hideDocumentDetail();
+  renderDocumentList(currentDocuments);
 }
 
 async function handleCreateDocument(): Promise<void> {
@@ -4029,14 +4258,14 @@ async function handleCreateDocument(): Promise<void> {
     return;
   }
 
-  const file = documentFileInput.files?.[0];
+  const files = Array.from(documentFileInput.files ?? []);
 
-  if (!file) {
-    setStatus("A document file is required.", "error");
+  if (files.length === 0) {
+    setStatus("At least one document file is required.", "error");
     return;
   }
 
-  let metadata: Record<string, unknown> = {};
+  let baseMetadata: Record<string, unknown> = {};
 
   if (documentMetadataInput.value.trim().length > 0) {
     try {
@@ -4046,7 +4275,7 @@ async function handleCreateDocument(): Promise<void> {
         throw new Error("Metadata JSON must be an object.");
       }
 
-      metadata = parsed as Record<string, unknown>;
+      baseMetadata = parsed as Record<string, unknown>;
     } catch (error) {
       setStatus(
         error instanceof Error ? error.message : "Metadata JSON is invalid.",
@@ -4057,62 +4286,84 @@ async function handleCreateDocument(): Promise<void> {
   }
 
   if (documentTitleInput.value.trim().length > 0) {
-    metadata.note = documentTitleInput.value.trim();
+    baseMetadata.note = documentTitleInput.value.trim();
   }
 
   createDocumentButton.disabled = true;
-  setStatus("Uploading document...", "loading");
+  setStatus(
+    files.length === 1
+      ? "Uploading document..."
+      : `Uploading ${files.length} documents...`,
+    "loading"
+  );
 
   try {
-    const canInlineExtractText = isInlineExtractableDocument(file);
-    const extractedText = canInlineExtractText
-      ? sanitizeUploadedText(await file.text())
-      : undefined;
-    const contentBase64 = canInlineExtractText
-      ? undefined
-      : await readFileAsBase64(file);
-    const ocrStatus: DocumentOcrStatus =
-      canInlineExtractText && extractedText && extractedText.trim().length > 0
-        ? "ready"
-        : "pending";
+    let lastUploadedDocumentId: string | null = null;
 
-    metadata.originalFilename = file.name;
-    metadata.inlineTextExtraction = canInlineExtractText;
+    for (const file of files) {
+      const canInlineExtractText = isInlineExtractableDocument(file);
+      const extractedText = canInlineExtractText
+        ? sanitizeUploadedText(await file.text())
+        : undefined;
+      const contentBase64 = canInlineExtractText
+        ? undefined
+        : await readFileAsBase64(file);
+      const ocrStatus: DocumentOcrStatus =
+        canInlineExtractText && extractedText && extractedText.trim().length > 0
+          ? "ready"
+          : "pending";
+      const metadata = {
+        ...baseMetadata,
+        originalFilename: file.name,
+        inlineTextExtraction: canInlineExtractText
+      };
 
-    const response = await fetch("/api/documents", {
-      method: "POST",
-      headers: buildApiHeaders({
-        "Content-Type": "application/json"
-      }),
-      body: JSON.stringify({
-        filename: file.name,
-        contentType: file.type || "text/plain",
-        sizeBytes: file.size,
-        metadata,
-        extractedText,
-        contentBase64,
-        ocrStatus
-      })
-    });
+      const response = await fetch("/api/documents", {
+        method: "POST",
+        headers: buildApiHeaders({
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type || "text/plain",
+          sizeBytes: file.size,
+          metadata,
+          extractedText,
+          contentBase64,
+          ocrStatus
+        })
+      });
 
-    if (!response.ok) {
-      throw new Error(
-        await readApiError(response, "The API could not upload the document")
-      );
+      if (!response.ok) {
+        throw new Error(
+          await readApiError(response, "The API could not upload the document")
+        );
+      }
+
+      const data = (await response.json()) as DocumentResponse;
+      lastUploadedDocumentId = data.document.id;
     }
 
-    const data = (await response.json()) as DocumentResponse;
     documentForm.reset();
     documentMetadataInput.value = "";
     documentTitleInput.value = "";
-    setStatus("Document uploaded successfully.", "success");
+    setStatus(
+      files.length === 1
+        ? "Document uploaded successfully."
+        : `${files.length} documents uploaded successfully.`,
+      "success"
+    );
 
     try {
       await loadDocuments();
-      await selectDocumentById(data.document.id);
+      if (lastUploadedDocumentId) {
+        await selectDocumentById(lastUploadedDocumentId);
+      }
     } catch {
       setStatus(
-        "Document uploaded successfully. Refresh the intake list if the new record is not shown yet.",
+        files.length === 1
+          ? "Document uploaded successfully. Refresh the intake list if the new record is not shown yet."
+          : `${files.length} documents uploaded successfully. Refresh the intake list if the new records are not shown yet.`,
         "success"
       );
     }
@@ -4342,6 +4593,7 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
             <span>By ${escapeHtml(item.workItem.createdByUserId)}</span>
             <span>${formatDate(item.workItem.updatedAt)}</span>
           </div>
+          <p class="workflow-inline-hint">${escapeHtml(getNextWorkItemAction(item.workItem.status))}</p>
           <div class="auth-actions">
             <button
               class="secondary-button task-detail-button"
@@ -5032,9 +5284,12 @@ function bindPrincipalWorkflowInteractions(): void {
 function renderOverview(): void {
   const now = Date.now();
   const documentCount = currentDocuments.length;
-  const queueCount = currentTaskItems.filter(
-    (item) => item.task.taskType === "school_workflow"
-  ).length;
+  const activeDepartmentTasks = currentTaskItems.filter(
+    (item) =>
+      item.task.taskType === "school_workflow" &&
+      item.task.status !== "completed"
+  );
+  const queueCount = activeDepartmentTasks.length;
   const waitingCount = currentWorkItems.filter(
     (item) => item.workItem.status === "waiting_review"
   ).length;
@@ -5076,6 +5331,28 @@ function renderOverview(): void {
     )
     .join("");
 
+  const actionableNotifications = currentNotifications.filter((notification) => {
+    const linkedWorkItem = notification.workItemId
+      ? currentWorkItems.find((item) => item.workItem.id === notification.workItemId) ?? null
+      : null;
+    const linkedAssignment = notification.assignmentId
+      ? currentAssignments.find((assignment) => assignment.id === notification.assignmentId) ?? null
+      : null;
+    const linkedTask = linkedAssignment
+      ? currentTaskItems.find((item) => item.task.id === linkedAssignment.taskId) ?? null
+      : null;
+
+    if (linkedWorkItem?.workItem.status === "completed" || linkedWorkItem?.workItem.status === "archived") {
+      return false;
+    }
+
+    if (linkedTask?.task.status === "completed") {
+      return false;
+    }
+
+    return true;
+  });
+
   const needsAttentionItems: Array<{
     label: string;
     view: typeof currentView;
@@ -5114,7 +5391,7 @@ function renderOverview(): void {
           }
         ]
       : []),
-    ...currentNotifications.slice(0, 4).map((notification) => {
+    ...actionableNotifications.slice(0, 4).map((notification) => {
       const linkedAssignment = notification.assignmentId
         ? currentAssignments.find((assignment) => assignment.id === notification.assignmentId) ?? null
         : null;
@@ -5543,7 +5820,8 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                 </button>
                 ${
                   isAdminLikeSession() &&
-                  item.workItem.status === "waiting_principal_approval"
+                  (item.workItem.status === "waiting_principal_approval" ||
+                    item.workItem.status === "in_review")
                     ? `
                       <button
                         id="approve-response-button"
@@ -6162,41 +6440,55 @@ async function handleUploadWorkItemFile(
   workItemId: string,
   input: HTMLInputElement
 ): Promise<void> {
-  const file = input.files?.[0];
+  const files = Array.from(input.files ?? []);
 
-  if (!file) {
+  if (files.length === 0) {
     return;
   }
 
   try {
-    const contentText = isInlineExtractableDocument(file)
-      ? sanitizeUploadedText(await file.text())
-      : undefined;
-    const contentBase64 = await readFileAsBase64(file);
-    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/files`, {
-      method: "POST",
-      headers: buildApiHeaders({
-        "Content-Type": "application/json"
-      }),
-      body: JSON.stringify({
-        filename: file.name,
-        contentType: file.type || "text/plain",
-        sizeBytes: file.size,
-        contentText,
-        contentBase64
-      })
-    });
+    for (const file of files) {
+      const contentText = isInlineExtractableDocument(file)
+        ? sanitizeUploadedText(await file.text())
+        : undefined;
+      const contentBase64 = await readFileAsBase64(file);
+      const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/files`, {
+        method: "POST",
+        headers: buildApiHeaders({
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type || "text/plain",
+          sizeBytes: file.size,
+          contentText,
+          contentBase64
+        })
+      });
 
-    if (!response.ok) {
-      throw new Error(
-        await readApiError(response, "The API could not upload the file")
-      );
+      if (!response.ok) {
+        throw new Error(
+          await readApiError(response, "The API could not upload the file")
+        );
+      }
     }
 
     input.value = "";
     await loadWorkItems();
-    await selectWorkItemById(workItemId);
-    setStatus("Response file uploaded successfully.", "success");
+    if (
+      selectedTaskId &&
+      currentTaskItems.find((item) => item.task.id === selectedTaskId)?.task.workItemId === workItemId
+    ) {
+      await focusTaskById(selectedTaskId);
+    } else {
+      await selectWorkItemById(workItemId);
+    }
+    setStatus(
+      files.length === 1
+        ? "Response file uploaded successfully."
+        : `${files.length} response files uploaded successfully.`,
+      "success"
+    );
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
@@ -6272,6 +6564,55 @@ function getAssignmentStatusForTask(assignmentId: string | undefined): string {
 
   const assignment = currentAssignments.find((item) => item.id === assignmentId);
   return assignment?.status ?? "unknown";
+}
+
+function getNextTaskAction(task: Task): string {
+  if (task.status === "pending") {
+    return "Accept the assignment or request an adjustment.";
+  }
+
+  if (task.status === "running") {
+    return "Open the task, upload evidence, then mark the response submitted.";
+  }
+
+  if (task.status === "completed") {
+    return "Wait for principal confirmation or archive review.";
+  }
+
+  if (task.status === "failed") {
+    return "Open the task detail to review the blocker and decide the next move.";
+  }
+
+  return "Open the task detail to continue execution.";
+}
+
+function getNextWorkItemAction(status: WorkItemStatus): string {
+  switch (status) {
+    case "draft":
+      return "Analyze the intake and convert it into a routed record.";
+    case "waiting_review":
+      return "Principal should review and choose the routing direction.";
+    case "waiting_assignment":
+      return "Prepare and dispatch the assignment handoff.";
+    case "assigned":
+      return "Monitor department acceptance and linked task progress.";
+    case "in_review":
+      return "Check the submitted response and decide whether to approve it.";
+    case "needs_supplement":
+      return "Request missing files or evidence from the department.";
+    case "needs_rework":
+      return "Return the record for content revision.";
+    case "late_explanation_required":
+      return "Collect the late explanation before approval.";
+    case "waiting_principal_approval":
+      return "Principal approval is the next required action.";
+    case "completed":
+      return "This record is complete and ready for reporting or archive.";
+    case "archived":
+      return "Archived for lookup only.";
+    default:
+      return "Open the record to continue the workflow.";
+  }
 }
 
 async function handleRejectAssignmentTask(taskId: string | null): Promise<void> {
@@ -6749,6 +7090,262 @@ function renderCurrentView(): void {
       currentSessionUser?.role && currentSessionUser?.departmentName
         ? `${meta.description} Current role: ${currentSessionUser.role}. Department: ${currentSessionUser.departmentName}.`
         : meta.description;
+  }
+
+  renderWorkflowChrome();
+}
+
+function renderWorkflowChrome(): void {
+  const workflowSteps: Array<{
+    key: "documents" | "approvals" | "department-tasks" | "work-items" | "reports";
+    label: string;
+    title: string;
+  }> = [
+    { key: "documents", label: "Step 1", title: "Intake" },
+    { key: "approvals", label: "Step 2", title: "Route & Assign" },
+    { key: "department-tasks", label: "Step 3", title: "Execute" },
+    { key: "work-items", label: "Step 4", title: "Review Record" },
+    { key: "reports", label: "Step 5", title: "Track & Report" }
+  ];
+
+  workflowStepper.innerHTML = workflowSteps
+    .map((step) => {
+      const isActive =
+        currentView === step.key ||
+        (step.key === "approvals" && currentView === "assignments");
+      const isComplete =
+        (step.key === "documents" && currentDocuments.length > 0) ||
+        (step.key === "approvals" &&
+          currentWorkItems.some(
+            (item) =>
+              item.workItem.status === "waiting_assignment" ||
+              item.workItem.status === "assigned" ||
+              item.workItem.status === "in_review" ||
+              item.workItem.status === "completed"
+          )) ||
+        (step.key === "department-tasks" &&
+          currentTaskItems.some((item) => item.task.taskType === "school_workflow")) ||
+        (step.key === "work-items" && currentWorkItems.length > 0);
+
+      return `
+        <button
+          class="workflow-step ${isActive ? "is-active" : ""} ${isComplete ? "is-complete" : ""}"
+          type="button"
+          data-workflow-view="${escapeHtml(step.key)}"
+        >
+          <span class="workflow-step-index">${escapeHtml(step.label)}</span>
+          <strong>${escapeHtml(step.title)}</strong>
+        </button>
+      `;
+    })
+    .join("");
+
+  workflowStepper
+    .querySelectorAll<HTMLButtonElement>("[data-workflow-view]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextView = button.dataset.workflowView as typeof currentView | undefined;
+        if (!nextView) {
+          return;
+        }
+        currentView = nextView;
+        renderCurrentView();
+      });
+    });
+
+  const actionsByView: Record<
+    typeof currentView,
+    Array<{ title: string; detail: string; targetView?: typeof currentView; kind?: "primary" | "secondary" }>
+  > = {
+    overview: [
+      {
+        title: "Start with new intake",
+        detail: "Open Intake Inbox, review the extracted summary, then create the principal-facing record.",
+        targetView: "documents",
+        kind: "primary"
+      },
+      {
+        title: "Process principal decisions",
+        detail: "Route records and create assignment handoff without leaving the workflow workspace.",
+        targetView: "approvals"
+      },
+      {
+        title: "Check department follow-up",
+        detail: "Open active execution tasks, see blockers, and watch for missing submissions.",
+        targetView: "department-tasks"
+      }
+    ],
+    documents: [
+      {
+        title: "1. Review or upload a source document",
+        detail: "Use OCR/extracted text as the intake preview so the record is created with context, not guesswork.",
+        kind: "primary"
+      },
+      {
+        title: "2. Analyze the intake",
+        detail: "Run intake analysis before creating the work item if the summary still looks incomplete."
+      },
+      {
+        title: "3. Create the work item record",
+        detail: "Once the intake looks right, convert it into a routed case for principal review.",
+        targetView: "approvals"
+      }
+    ],
+    approvals: [
+      {
+        title: "1. Pick the routing direction",
+        detail: "Choose whether the item should move forward, go back for intake completion, or be put on hold.",
+        kind: "primary"
+      },
+      {
+        title: "2. Set lead department, priority, and output",
+        detail: "Keep all routing decisions and assignment prep in this same workspace."
+      },
+      {
+        title: "3. Dispatch the assignment",
+        detail: "After saving the principal decision, scroll to Assignment Handoff and open the record workspace if needed.",
+        targetView: "work-items"
+      }
+    ],
+    "department-tasks": [
+      {
+        title: "1. Accept or request adjustment",
+        detail: "A pending assignment should not sit silently. Confirm it or bounce it back with a reason.",
+        kind: "primary"
+      },
+      {
+        title: "2. Upload evidence and response files",
+        detail: "Use Upload Response File for one or many files, then check Attachments immediately in the open task."
+      },
+      {
+        title: "3. Mark response submitted",
+        detail: "Submission moves the record into review. It is not completed until principal approval."
+      }
+    ],
+    "work-items": [
+      {
+        title: "1. Review the full record",
+        detail: "Use this screen for source files, assignment state, review history, and final approval actions.",
+        kind: "primary"
+      },
+      {
+        title: "2. Check files and assignment tab",
+        detail: "If a department submitted work, verify the attachments and open the linked task when needed."
+      },
+      {
+        title: "3. Approve the response",
+        detail: "Principal/admin should approve here once the record is ready for completion."
+      }
+    ],
+    assignments: [
+      {
+        title: "Assignments are now part of Principal Routing",
+        detail: "Use the routing workspace to create and monitor handoff instead of jumping across modules.",
+        targetView: "approvals",
+        kind: "primary"
+      }
+    ],
+    reports: [
+      {
+        title: "Review bottlenecks and workload",
+        detail: "Use Reports for the operational picture after intake, routing, and execution data have moved.",
+        kind: "primary"
+      }
+    ],
+    admin: [
+      {
+        title: "Admin is for setup, not daily execution",
+        detail: "Manage departments and users here, then move back to the workflow views for operational work.",
+        kind: "primary"
+      }
+    ],
+    account: [
+      {
+        title: "Account controls only",
+        detail: "Login, session, and password change live here so they do not interrupt the workflow screens.",
+        kind: "primary"
+      }
+    ],
+    legacy: [
+      {
+        title: "Legacy tools are isolated",
+        detail: "Use this only for old growth-task workflows that are outside the school process.",
+        kind: "primary"
+      }
+    ]
+  };
+
+  const currentActions = actionsByView[currentView];
+  workflowGuidance.innerHTML = `
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Next Actions</p>
+        <h3>What to do in this step</h3>
+      </div>
+    </div>
+    <div class="workflow-actions-grid">
+      ${currentActions
+        .map(
+          (action) => `
+            <article class="workflow-action-card ${action.kind === "primary" ? "is-primary" : ""}">
+              <strong>${escapeHtml(action.title)}</strong>
+              <p>${escapeHtml(action.detail)}</p>
+              ${
+                action.targetView
+                  ? `
+                    <button
+                      class="secondary-button workflow-action-button"
+                      type="button"
+                      data-guidance-view="${escapeHtml(action.targetView)}"
+                    >
+                      Open ${escapeHtml(titlesForView(action.targetView))}
+                    </button>
+                  `
+                  : ""
+              }
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+
+  workflowGuidance
+    .querySelectorAll<HTMLButtonElement>("[data-guidance-view]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextView = button.dataset.guidanceView as typeof currentView | undefined;
+        if (!nextView) {
+          return;
+        }
+        currentView = nextView;
+        renderCurrentView();
+      });
+    });
+}
+
+function titlesForView(view: typeof currentView): string {
+  switch (view) {
+    case "documents":
+      return "Intake Inbox";
+    case "approvals":
+      return "Principal Routing";
+    case "department-tasks":
+      return "Department Execution";
+    case "work-items":
+      return "Records";
+    case "reports":
+      return "Reports";
+    case "admin":
+      return "Admin";
+    case "account":
+      return "Account";
+    case "legacy":
+      return "Legacy";
+    case "overview":
+      return "Overview";
+    case "assignments":
+      return "Assignments";
   }
 }
 

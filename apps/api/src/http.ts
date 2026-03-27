@@ -2617,36 +2617,6 @@ export async function handleRequest(
       return;
     }
 
-    if (existingTask.task.workItemId) {
-      const linkedWorkItem = await getWorkItemById(
-        existingTask.task.workItemId,
-        accessContext
-      );
-
-      if (
-        linkedWorkItem &&
-        linkedWorkItem.workItem.status !== "waiting_principal_approval"
-      ) {
-        sendJson(
-          res,
-          409,
-          {
-            error: "Submission review must mark the work item ready for principal approval first"
-          },
-          startedAtMs,
-          method,
-          url,
-          {
-            userId: accessContext.userId,
-            taskId: taskApproveResponseId,
-            workItemId: linkedWorkItem.workItem.id,
-            workItemStatus: linkedWorkItem.workItem.status
-          }
-        );
-        return;
-      }
-    }
-
     const updatedTask = await approveTaskResponse(taskApproveResponseId);
 
     if (!updatedTask) {
