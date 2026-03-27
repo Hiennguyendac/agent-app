@@ -78,6 +78,7 @@ import {
   addWorkItemFile,
   analyzeWorkItem,
   canCreateWorkItems,
+  deleteWorkItem,
   createWorkItem,
   getWorkItemFileDownload,
   getWorkItemById,
@@ -1468,6 +1469,92 @@ export async function handleRequest(
       }
     );
     return;
+  }
+
+  if (method === "DELETE" && workItemId) {
+    if (
+      accessContext.role !== "principal" &&
+      accessContext.role !== "admin" &&
+      accessContext.role !== "clerk"
+    ) {
+      sendJson(
+        res,
+        403,
+        {
+          error: "Principal, admin, or clerk access required"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId
+        }
+      );
+      return;
+    }
+
+    try {
+      const deleted = await deleteWorkItem(workItemId, accessContext);
+
+      if (!deleted) {
+        sendJson(
+          res,
+          404,
+          {
+            error: "Work item not found"
+          },
+          startedAtMs,
+          method,
+          url,
+          {
+            userId: accessContext.userId,
+            workItemId
+          }
+        );
+        return;
+      }
+
+      logAuditEvent("work_item.deleted", {
+        userId: accessContext.userId,
+        workItemId
+      });
+
+      sendJson(
+        res,
+        200,
+        {
+          success: true
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId
+        }
+      );
+      return;
+    } catch (error) {
+      sendJson(
+        res,
+        409,
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "The work item could not be deleted"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId
+        }
+      );
+      return;
+    }
   }
 
   if (method === "POST" && workItemFileTargetId) {

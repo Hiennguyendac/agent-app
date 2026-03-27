@@ -958,6 +958,38 @@ app.innerHTML = `
         <div id="document-modal-body" class="task-modal-body"></div>
       </section>
     </div>
+
+    <div id="work-item-modal" class="task-modal hidden" aria-hidden="true">
+      <button
+        id="work-item-modal-backdrop"
+        class="task-modal-backdrop"
+        type="button"
+        aria-label="Close work item detail"
+      ></button>
+      <section
+        class="task-modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="work-item-modal-title"
+      >
+        <header class="task-modal-header">
+          <div class="task-modal-heading">
+            <p class="eyebrow">Record Detail</p>
+            <h3 id="work-item-modal-title">Work Item Detail</h3>
+            <p id="work-item-modal-meta" class="result-meta"></p>
+          </div>
+          <button
+            id="work-item-modal-close"
+            class="secondary-button"
+            type="button"
+            aria-label="Close work item detail"
+          >
+            Close
+          </button>
+        </header>
+        <div id="work-item-modal-body" class="task-modal-body"></div>
+      </section>
+    </div>
   </main>
 `;
 
@@ -1070,6 +1102,17 @@ const workItemDetailMeta =
   document.querySelector<HTMLParagraphElement>("#work-item-detail-meta")!;
 const workItemDetailBody =
   document.querySelector<HTMLDivElement>("#work-item-detail-body")!;
+const workItemModal = document.querySelector<HTMLElement>("#work-item-modal")!;
+const workItemModalBackdrop =
+  document.querySelector<HTMLButtonElement>("#work-item-modal-backdrop")!;
+const workItemModalClose =
+  document.querySelector<HTMLButtonElement>("#work-item-modal-close")!;
+const workItemModalTitle =
+  document.querySelector<HTMLHeadingElement>("#work-item-modal-title")!;
+const workItemModalMeta =
+  document.querySelector<HTMLParagraphElement>("#work-item-modal-meta")!;
+const workItemModalBody =
+  document.querySelector<HTMLDivElement>("#work-item-modal-body")!;
 const departmentTaskQueue =
   document.querySelector<HTMLElement>("#department-task-queue")!;
 const departmentTaskQueueList =
@@ -1200,6 +1243,12 @@ if (
   !workItemDetailTitle ||
   !workItemDetailMeta ||
   !workItemDetailBody ||
+  !workItemModal ||
+  !workItemModalBackdrop ||
+  !workItemModalClose ||
+  !workItemModalTitle ||
+  !workItemModalMeta ||
+  !workItemModalBody ||
   !departmentTaskQueue ||
   !departmentTaskQueueList ||
   !departmentTaskStatusFilter ||
@@ -1309,6 +1358,9 @@ window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !documentModal.classList.contains("hidden")) {
     closeDocumentModal();
   }
+  if (event.key === "Escape" && !workItemModal.classList.contains("hidden")) {
+    closeWorkItemModal();
+  }
 });
 
 documentModalBackdrop.addEventListener("click", () => {
@@ -1317,6 +1369,14 @@ documentModalBackdrop.addEventListener("click", () => {
 
 documentModalClose.addEventListener("click", () => {
   closeDocumentModal();
+});
+
+workItemModalBackdrop.addEventListener("click", () => {
+  closeWorkItemModal();
+});
+
+workItemModalClose.addEventListener("click", () => {
+  closeWorkItemModal();
 });
 
 workItemSearchInput.addEventListener("input", () => {
@@ -3093,6 +3153,38 @@ async function handleDeleteTask(
   }
 }
 
+async function handleDeleteWorkItem(workItemId: string | null): Promise<void> {
+  if (!workItemId) {
+    return;
+  }
+
+  setStatus("Deleting work item...", "loading");
+
+  try {
+    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}`, {
+      method: "DELETE",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "The API could not delete the work item"));
+    }
+
+    selectedWorkItemId = null;
+    closeWorkItemModal();
+    await loadWorkItems();
+    await loadAssignments();
+    setStatus("Work item deleted successfully.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong while deleting the work item.",
+      "error"
+    );
+  }
+}
+
 function flashButtonLabel(
   button: HTMLButtonElement,
   temporaryLabel: string,
@@ -3128,6 +3220,10 @@ function resolveContextStatusHost(): HTMLElement | null {
 
   if (!documentModal.classList.contains("hidden")) {
     return documentModalBody;
+  }
+
+  if (!workItemModal.classList.contains("hidden")) {
+    return workItemModalBody;
   }
 
   const viewMap: Record<typeof currentView, HTMLElement> = {
@@ -4600,7 +4696,7 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
               type="button"
               data-work-item-id="${escapeHtml(item.workItem.id)}"
             >
-              ${selectedWorkItemId === item.workItem.id ? "Hide" : "Open"}
+              ${selectedWorkItemId === item.workItem.id ? "Close" : "Open Record"}
             </button>
             ${
               assignment
@@ -5683,15 +5779,16 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     currentDocuments.find(
       (documentItem) => documentItem.document.createdWorkItemId === item.workItem.id
     ) ?? null;
-  workItemDetail.classList.remove("hidden");
+  workItemDetail.classList.add("hidden");
   workItemDetailTitle.textContent = item.workItem.title;
   workItemDetailMeta.textContent = [
     `Status: ${item.workItem.status}`,
     `Created: ${formatDate(item.workItem.createdAt)}`,
     `Updated: ${formatDate(item.workItem.updatedAt)}`
   ].join(" | ");
-
-  workItemDetailBody.innerHTML = `
+  workItemModalTitle.textContent = item.workItem.title;
+  workItemModalMeta.textContent = workItemDetailMeta.textContent;
+  workItemModalBody.innerHTML = `
     <div class="detail-tabs">
       <button class="tab-button is-active" type="button" data-detail-tab="info">Info</button>
       <button class="tab-button" type="button" data-detail-tab="files">Files</button>
@@ -5699,7 +5796,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       <button class="tab-button" type="button" data-detail-tab="assignment">Assignment</button>
       <button class="tab-button" type="button" data-detail-tab="history">History</button>
     </div>
-    <div class="task-actions">
+    <div class="task-actions compact-action-bar">
       <label class="field work-item-status-field">
         <span>Status</span>
         <select id="work-item-status-select">
@@ -5711,10 +5808,10 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         class="secondary-button"
         type="button"
       >
-        Save Work Item
+        Save
       </button>
       <label class="secondary-button work-item-file-label" for="work-item-file-input">
-        Upload File
+        Upload
       </label>
       <input id="work-item-file-input" class="hidden" type="file" />
       <button
@@ -5722,8 +5819,21 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         class="secondary-button"
         type="button"
       >
-        AI Analyze
+        Analyze
       </button>
+      ${
+        !currentAssignment
+          ? `
+            <button
+              id="delete-work-item-button"
+              class="secondary-button danger-button"
+              type="button"
+            >
+              Delete
+            </button>
+          `
+          : ""
+      }
     </div>
     <section class="tab-panel" data-detail-panel="info">
       <div class="task-detail-grid">
@@ -5984,13 +6094,15 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
   `;
 
   const saveButton =
-    workItemDetailBody.querySelector<HTMLButtonElement>("#save-work-item-button");
+    workItemModalBody.querySelector<HTMLButtonElement>("#save-work-item-button");
   const analyzeButton =
-    workItemDetailBody.querySelector<HTMLButtonElement>("#analyze-work-item-button");
+    workItemModalBody.querySelector<HTMLButtonElement>("#analyze-work-item-button");
   const fileInput =
-    workItemDetailBody.querySelector<HTMLInputElement>("#work-item-file-input");
+    workItemModalBody.querySelector<HTMLInputElement>("#work-item-file-input");
   const assignButton =
-    workItemDetailBody.querySelector<HTMLButtonElement>("#assign-work-item-button");
+    workItemModalBody.querySelector<HTMLButtonElement>("#assign-work-item-button");
+  const deleteButton =
+    workItemModalBody.querySelector<HTMLButtonElement>("#delete-work-item-button");
 
   saveButton?.addEventListener("click", async () => {
     await handleSaveWorkItem(item.workItem.id);
@@ -6004,11 +6116,15 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     await handleUploadWorkItemFile(item.workItem.id, fileInput);
   });
 
+  deleteButton?.addEventListener("click", async () => {
+    await handleDeleteWorkItem(item.workItem.id);
+  });
+
   assignButton?.addEventListener("click", async () => {
     await handleAssignWorkItem(item.workItem.id);
   });
 
-  workItemDetailBody
+  workItemModalBody
     .querySelector<HTMLButtonElement>("#open-linked-task-button")
     ?.addEventListener("click", async () => {
       currentView = "department-tasks";
@@ -6016,13 +6132,13 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       await focusTaskById(currentAssignment?.taskId ?? null);
     });
 
-  workItemDetailBody
+  workItemModalBody
     .querySelector<HTMLButtonElement>("#approve-response-button")
     ?.addEventListener("click", async () => {
       await handleApproveTaskResponse(currentAssignment?.taskId ?? null);
     });
 
-  workItemDetailBody
+  workItemModalBody
     .querySelectorAll<HTMLButtonElement>("[data-download-linked-document-id]")
     .forEach((button) => {
       button.addEventListener("click", async () => {
@@ -6043,7 +6159,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       });
     });
 
-  workItemDetailBody
+  workItemModalBody
     .querySelectorAll<HTMLButtonElement>("[data-download-work-item-file-id]")
     .forEach((button) => {
       button.addEventListener("click", async () => {
@@ -6064,7 +6180,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       });
     });
 
-  workItemDetailBody
+  workItemModalBody
     .querySelectorAll<HTMLButtonElement>("[data-detail-tab]")
     .forEach((button) => {
       button.addEventListener("click", () => {
@@ -6072,6 +6188,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       });
     });
 
+  openWorkItemModal();
   setActiveWorkItemDetailTab("info");
 }
 
@@ -6081,20 +6198,38 @@ function hideWorkItemDetail(): void {
   workItemDetailTitle.textContent = "Work Item Detail";
   workItemDetailMeta.textContent = "";
   workItemDetailBody.innerHTML = "";
+  workItemModalTitle.textContent = "Work Item Detail";
+  workItemModalMeta.textContent = "";
+  workItemModalBody.innerHTML = "";
+  workItemModal.classList.add("hidden");
+  workItemModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
 }
 
 function setActiveWorkItemDetailTab(tabName: string): void {
-  workItemDetailBody
+  workItemModalBody
     .querySelectorAll<HTMLButtonElement>("[data-detail-tab]")
     .forEach((button) => {
       button.classList.toggle("is-active", button.dataset.detailTab === tabName);
     });
 
-  workItemDetailBody
+  workItemModalBody
     .querySelectorAll<HTMLElement>("[data-detail-panel]")
     .forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.detailPanel !== tabName);
     });
+}
+
+function openWorkItemModal(): void {
+  workItemModal.classList.remove("hidden");
+  workItemModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeWorkItemModal(): void {
+  selectedWorkItemId = null;
+  hideWorkItemDetail();
+  renderWorkItemList(currentWorkItems);
 }
 
 function renderWorkItemStatusOptions(selectedStatus: WorkItemStatus): string {

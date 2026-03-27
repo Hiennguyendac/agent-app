@@ -334,6 +334,29 @@ h3 {
   align-items: center;
 }
 
+.compact-action-bar {
+  gap: 6px;
+  align-items: end;
+}
+
+.compact-action-bar .secondary-button,
+.compact-action-bar .primary-button,
+.compact-action-bar .tab-button,
+.compact-action-bar .work-item-file-label {
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.compact-action-bar .work-item-status-field {
+  min-width: 220px;
+  max-width: 260px;
+  gap: 4px;
+}
+
+.compact-action-bar .work-item-status-field select {
+  min-height: 34px;
+}
+
 .primary-button,
 .secondary-button,
 .tab-button {
@@ -638,6 +661,15 @@ h3 {
 .task-card {
   display: grid;
   gap: 6px;
+}
+
+.task-card .auth-actions {
+  gap: 6px;
+}
+
+.task-card .secondary-button {
+  min-height: 32px;
+  padding: 5px 10px;
 }
 
 .list-row {

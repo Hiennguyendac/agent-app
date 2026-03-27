@@ -490,6 +490,38 @@ export async function analyzeWorkItem(
   return mapAiAnalysisRow(result.rows[0]);
 }
 
+export async function deleteWorkItem(
+  workItemId: string,
+  accessContext: TaskAccessContext
+): Promise<boolean> {
+  const existing = await getWorkItemById(workItemId, accessContext);
+
+  if (!existing) {
+    return false;
+  }
+
+  const assignmentCheck = await getDbPool().query(
+    `
+      SELECT 1
+      FROM assignments
+      WHERE work_item_id = $1
+        AND active = true
+      LIMIT 1
+    `,
+    [workItemId]
+  );
+
+  if (assignmentCheck.rows.length > 0) {
+    throw new Error("Assigned work items cannot be deleted");
+  }
+
+  await getDbPool().query(`DELETE FROM work_item_files WHERE work_item_id = $1`, [workItemId]);
+  await getDbPool().query(`DELETE FROM ai_analysis WHERE work_item_id = $1`, [workItemId]);
+  await getDbPool().query(`DELETE FROM work_items WHERE id = $1`, [workItemId]);
+
+  return true;
+}
+
 export function canCreateWorkItems(accessContext: TaskAccessContext): boolean {
   return (
     accessContext.role === "principal" ||
