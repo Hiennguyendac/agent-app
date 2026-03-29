@@ -15,3 +15,15 @@ export interface TaskUpdate {
   note?: string;
   createdAt: string;
 }
+
+export interface TaskUpdateFile {
+  id: string;
+  taskUpdateId: string;
+  taskId: string;
+  filename: string;
+  contentType?: string;
+  sizeBytes?: number;
+  hasFileContent?: boolean;
+  uploadedByUserId?: string;
+  createdAt: string;
+}

@@ -2,6 +2,8 @@ import type {
   AiAnalysis,
   WorkItem,
   WorkItemFile,
+  WorkItemOutputType,
+  WorkItemSourceType,
   WorkItemStatus
 } from "../../../packages/shared-types/index.js";
 import { getDbPool } from "./db.js";
@@ -18,6 +20,10 @@ export interface CreateWorkItemInput {
   title: string;
   description: string;
   departmentId?: string;
+  sourceType?: WorkItemSourceType;
+  intakeCode?: string;
+  deadline?: string;
+  outputType?: WorkItemOutputType;
 }
 
 export interface UpdateWorkItemInput {
@@ -34,6 +40,8 @@ export interface ReviewWorkItemInput {
   coordinatingDepartmentIds?: string[];
   priority?: "low" | "normal" | "high" | "urgent";
   outputRequirement?: string | null;
+  outputType?: WorkItemOutputType | null;
+  deadline?: string | null;
   principalNote?: string | null;
 }
 
@@ -64,16 +72,32 @@ export async function createWorkItem(
         description,
         status,
         department_id,
+        source_type,
+        intake_code,
+        deadline,
+        output_type,
         created_by_user_id,
         assigned_to_user_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING
         id,
         title,
         description,
         status,
         department_id,
+        lead_department_id,
+        coordinating_department_ids,
+        routing_priority,
+        output_requirement,
+        source_type,
+        intake_code,
+        deadline,
+        output_type,
+        principal_note,
+        principal_decision,
+        principal_reviewed_at,
+        principal_reviewed_by_user_id,
         created_by_user_id,
         assigned_to_user_id,
         created_at,
@@ -85,6 +109,10 @@ export async function createWorkItem(
       input.description,
       "waiting_review",
       input.departmentId ?? null,
+      input.sourceType ?? null,
+      input.intakeCode ?? null,
+      input.deadline ?? null,
+      input.outputType ?? null,
       createdByUserId,
       null
     ]
@@ -109,6 +137,10 @@ export async function listWorkItems(
         w.coordinating_department_ids,
         w.routing_priority,
         w.output_requirement,
+        w.source_type,
+        w.intake_code,
+        w.deadline,
+        w.output_type,
         w.principal_note,
         w.principal_decision,
         w.principal_reviewed_at,
@@ -158,6 +190,10 @@ export async function getWorkItemById(
         w.coordinating_department_ids,
         w.routing_priority,
         w.output_requirement,
+        w.source_type,
+        w.intake_code,
+        w.deadline,
+        w.output_type,
         w.principal_note,
         w.principal_decision,
         w.principal_reviewed_at,
@@ -284,10 +320,12 @@ export async function reviewWorkItem(
           coordinating_department_ids = $5,
           routing_priority = $6,
           output_requirement = $7,
-          principal_note = $8,
-          principal_decision = $9,
+          output_type = $8,
+          deadline = $9,
+          principal_note = $10,
+          principal_decision = $11,
           principal_reviewed_at = NOW(),
-          principal_reviewed_by_user_id = $10,
+          principal_reviewed_by_user_id = $12,
           updated_at = NOW()
       WHERE id = $1
       RETURNING
@@ -300,6 +338,10 @@ export async function reviewWorkItem(
         coordinating_department_ids,
         routing_priority,
         output_requirement,
+        source_type,
+        intake_code,
+        deadline,
+        output_type,
         principal_note,
         principal_decision,
         principal_reviewed_at,
@@ -317,6 +359,8 @@ export async function reviewWorkItem(
       input.coordinatingDepartmentIds ?? [],
       input.priority ?? null,
       input.outputRequirement ?? null,
+      input.outputType ?? null,
+      input.deadline ?? null,
       input.principalNote ?? null,
       input.decision,
       reviewedByUserId
@@ -680,6 +724,10 @@ function mapWorkItemRow(row: Record<string, unknown>): WorkItem {
     title: row.title as string,
     description: row.description as string,
     status: row.status as WorkItemStatus,
+    sourceType: (row.source_type as WorkItemSourceType | null) ?? undefined,
+    intakeCode: (row.intake_code as string | null) ?? undefined,
+    deadline: (row.deadline as string | null) ?? undefined,
+    outputType: (row.output_type as WorkItemOutputType | null) ?? undefined,
     departmentId: (row.department_id as string | null) ?? undefined,
     leadDepartmentId: (row.lead_department_id as string | null) ?? undefined,
     coordinatingDepartmentIds:

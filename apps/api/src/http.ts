@@ -51,10 +51,16 @@ import {
   listTaskItems,
   saveTaskResult,
   submitTaskResponse,
+  submitTaskReport,
+  recordQualityCheck,
+  principalApproveTask,
+  addTaskUpdateFile,
+  listTaskUpdateFiles,
   updateTaskWithAssignmentLink,
   updateTaskStatus,
   type CreateTaskUpdateInput,
-  type CreateTaskInput
+  type CreateTaskInput,
+  type TaskUpdateFileInput
 } from "./store.js";
 import {
   createSubmissionReview,
@@ -103,6 +109,12 @@ import {
   listDocuments,
   type CreateDocumentInput
 } from "./documents.js";
+import {
+  runDeadlineReminders,
+  generateDailyReport,
+  generateWeeklyReport,
+  runQualityCheck
+} from "./agent-check.js";
 import {
   createUser,
   changeUserPassword,
@@ -3014,6 +3026,260 @@ export async function handleRequest(
     return;
   }
 
+  // ── Agent automation endpoints ──────────────────────────────────────
+  if (method === "POST" && pathname === "/agent/deadline-reminders") {
+    if (
+      accessContext.role !== "principal" &&
+      accessContext.role !== "admin"
+    ) {
+      sendJson(res, 403, { error: "Principal access required" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    const result = await runDeadlineReminders();
+    sendJson(res, 200, { result }, startedAtMs, method, url, { userId: accessContext.userId });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/agent/daily-report") {
+    if (!accessContext.userId) {
+      sendJson(res, 401, { error: "Authentication required" }, startedAtMs, method, url, { userId: null });
+      return;
+    }
+
+    const report = await generateDailyReport();
+    sendJson(res, 200, { report }, startedAtMs, method, url, { userId: accessContext.userId });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/agent/weekly-report") {
+    if (
+      accessContext.role !== "principal" &&
+      accessContext.role !== "admin"
+    ) {
+      sendJson(res, 403, { error: "Principal access required" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    const report = await generateWeeklyReport();
+    sendJson(res, 200, { report }, startedAtMs, method, url, { userId: accessContext.userId });
+    return;
+  }
+
+  // ── Task report submission ────────────────────────────────────────────
+  const taskSubmitReportId = getTaskSubmitReportIdFromUrl(url);
+
+  if (method === "POST" && taskSubmitReportId) {
+    if (!accessContext.userId) {
+      sendJson(res, 401, { error: "Authentication required" }, startedAtMs, method, url, { userId: null });
+      return;
+    }
+
+    const taskItem = await getTaskItemById(taskSubmitReportId, accessContext);
+
+    if (!taskItem) {
+      sendJson(res, 404, { error: "Task not found" }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskSubmitReportId });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const reportNote = typeof (body as { reportNote?: unknown }).reportNote === "string"
+      ? String((body as { reportNote?: unknown }).reportNote)
+      : "";
+
+    const updatedTask = await submitTaskReport(taskSubmitReportId, reportNote);
+
+    if (!updatedTask) {
+      sendJson(res, 500, { error: "Failed to submit report" }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskSubmitReportId });
+      return;
+    }
+
+    // Update work item status to waiting principal approval
+    if (taskItem.task.workItemId) {
+      await updateWorkItem(taskItem.task.workItemId, { status: "waiting_principal_approval" }, accessContext);
+    }
+
+    logAuditEvent("task.report_submitted", { userId: accessContext.userId, taskId: taskSubmitReportId });
+    sendJson(res, 200, { task: updatedTask }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskSubmitReportId });
+    return;
+  }
+
+  // ── Task quality check ───────────────────────────────────────────────
+  const taskQualityCheckId = getTaskQualityCheckIdFromUrl(url);
+
+  if (method === "POST" && taskQualityCheckId) {
+    if (
+      accessContext.role !== "principal" &&
+      accessContext.role !== "admin"
+    ) {
+      sendJson(res, 403, { error: "Principal access required" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    const taskItem = await getTaskItemById(taskQualityCheckId, accessContext);
+
+    if (!taskItem) {
+      sendJson(res, 404, { error: "Task not found" }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskQualityCheckId });
+      return;
+    }
+
+    const checkResult = await runQualityCheck(taskQualityCheckId);
+    const updatedTask = await recordQualityCheck(
+      taskQualityCheckId,
+      checkResult.passed,
+      checkResult.recommendation
+    );
+
+    // If not passed, update work item status accordingly
+    if (!checkResult.passed && taskItem.task.workItemId) {
+      const returnStatus = checkResult.returnStage === "submission"
+        ? "needs_supplement"
+        : checkResult.returnStage === "execution_late"
+          ? "late_explanation_required"
+          : "needs_rework";
+      await updateWorkItem(taskItem.task.workItemId, { status: returnStatus }, accessContext);
+    }
+
+    logAuditEvent("task.quality_checked", {
+      userId: accessContext.userId,
+      taskId: taskQualityCheckId,
+      passed: checkResult.passed,
+      score: checkResult.score
+    });
+
+    sendJson(res, 200, { task: updatedTask, checkResult }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskQualityCheckId });
+    return;
+  }
+
+  // ── Task principal approval ──────────────────────────────────────────
+  const taskPrincipalApproveId = getTaskPrincipalApproveIdFromUrl(url);
+
+  if (method === "POST" && taskPrincipalApproveId) {
+    if (
+      accessContext.role !== "principal" &&
+      accessContext.role !== "admin"
+    ) {
+      sendJson(res, 403, { error: "Principal access required" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    const taskItem = await getTaskItemById(taskPrincipalApproveId, accessContext);
+
+    if (!taskItem) {
+      sendJson(res, 404, { error: "Task not found" }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskPrincipalApproveId });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const approvalNote = typeof (body as { approvalNote?: unknown }).approvalNote === "string"
+      ? String((body as { approvalNote?: unknown }).approvalNote)
+      : "Phê duyệt hoàn thành";
+
+    const updatedTask = await principalApproveTask(taskPrincipalApproveId, approvalNote);
+
+    if (!updatedTask) {
+      sendJson(res, 500, { error: "Failed to approve" }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskPrincipalApproveId });
+      return;
+    }
+
+    // Archive the work item
+    if (taskItem.task.workItemId) {
+      await updateWorkItem(taskItem.task.workItemId, { status: "completed" }, accessContext);
+    }
+
+    logAuditEvent("task.principal_approved", { userId: accessContext.userId, taskId: taskPrincipalApproveId });
+    sendJson(res, 200, { task: updatedTask }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskPrincipalApproveId });
+    return;
+  }
+
+  // ── Task update evidence files ──────────────────────────────────────
+  const taskFilesTargetId = getTaskFilesTargetIdFromUrl(url);
+
+  if (method === "POST" && taskFilesTargetId) {
+    if (!accessContext.userId) {
+      sendJson(res, 401, { error: "Authentication required" }, startedAtMs, method, url, { userId: null });
+      return;
+    }
+
+    const taskItem = await getTaskItemById(taskFilesTargetId, accessContext);
+
+    if (!taskItem) {
+      sendJson(res, 404, { error: "Task not found" }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskFilesTargetId });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const fileInput = body as Partial<TaskUpdateFileInput & { taskUpdateId?: string }>;
+
+    if (!fileInput.filename || typeof fileInput.filename !== "string") {
+      sendJson(res, 400, { error: "Field 'filename' is required" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    // Use a dummy update id if not provided (file attached directly to task)
+    const taskUpdateId = typeof fileInput.taskUpdateId === "string"
+      ? fileInput.taskUpdateId
+      : `tup_direct_${taskFilesTargetId}`;
+
+    const file = await addTaskUpdateFile(
+      taskUpdateId,
+      taskFilesTargetId,
+      {
+        filename: fileInput.filename,
+        contentType: typeof fileInput.contentType === "string" ? fileInput.contentType : undefined,
+        sizeBytes: typeof fileInput.sizeBytes === "number" ? fileInput.sizeBytes : undefined,
+        contentText: typeof fileInput.contentText === "string" ? fileInput.contentText : undefined,
+        contentBase64: typeof fileInput.contentBase64 === "string" ? fileInput.contentBase64 : undefined
+      },
+      accessContext.userId as string
+    );
+
+    sendJson(res, 201, { file }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskFilesTargetId });
+    return;
+  }
+
+  if (method === "GET" && taskFilesTargetId) {
+    if (!accessContext.userId) {
+      sendJson(res, 401, { error: "Authentication required" }, startedAtMs, method, url, { userId: null });
+      return;
+    }
+
+    const files = await listTaskUpdateFiles(taskFilesTargetId);
+    sendJson(res, 200, { files }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskFilesTargetId });
+    return;
+  }
+
+  // ── Giai đoạn 9: Archive work item ─────────────────────────────────────
+  const workItemArchiveTargetId = getWorkItemArchiveTargetIdFromUrl(url);
+
+  if (method === "POST" && workItemArchiveTargetId) {
+    if (!accessContext.userId) {
+      sendJson(res, 401, { error: "Authentication required" }, startedAtMs, method, url, { userId: null });
+      return;
+    }
+
+    if (sessionUser?.role !== "principal" && sessionUser?.role !== "admin") {
+      sendJson(res, 403, { error: "Only principal or admin can archive work items" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    const targetWorkItem = await getWorkItemById(workItemArchiveTargetId, accessContext);
+    if (!targetWorkItem) {
+      sendJson(res, 404, { error: "Work item not found" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    if (targetWorkItem.workItem.status !== "completed") {
+      sendJson(res, 409, { error: "Only completed work items can be archived" }, startedAtMs, method, url, { userId: accessContext.userId });
+      return;
+    }
+
+    const archived = await updateWorkItem(workItemArchiveTargetId, { status: "archived" }, accessContext);
+    logAuditEvent("work_item.archived", { userId: accessContext.userId, workItemId: workItemArchiveTargetId });
+    sendJson(res, 200, { workItem: archived }, startedAtMs, method, url, { userId: accessContext.userId, workItemId: workItemArchiveTargetId });
+    return;
+  }
+
   sendJson(res, 404, {
     error: "Route not found"
   }, startedAtMs, method, url);
@@ -3021,6 +3287,26 @@ export async function handleRequest(
 
 function getTaskIdFromUrl(url: string): string | null {
   const match = /^\/tasks\/([^/]+)$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskSubmitReportIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/submit-report$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskQualityCheckIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/quality-check$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskPrincipalApproveIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/principal-approve$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getTaskFilesTargetIdFromUrl(url: string): string | null {
+  const match = /^\/tasks\/([^/]+)\/files$/.exec(url);
   return match?.[1] ?? null;
 }
 
@@ -3081,6 +3367,11 @@ function getWorkItemReviewTargetIdFromUrl(url: string): string | null {
 
 function getWorkItemAssignTargetIdFromUrl(url: string): string | null {
   const match = /^\/work-items\/([^/]+)\/assign$/.exec(url);
+  return match?.[1] ?? null;
+}
+
+function getWorkItemArchiveTargetIdFromUrl(url: string): string | null {
+  const match = /^\/work-items\/([^/]+)\/archive$/.exec(url);
   return match?.[1] ?? null;
 }
 
@@ -3176,6 +3467,7 @@ function getCreateWorkItemInputError(body: unknown): string | null {
     return "Field 'departmentId' must be a string if provided";
   }
 
+  // Optional new fields are accepted as-is (strings or undefined)
   return null;
 }
 
@@ -3434,6 +3726,8 @@ function getPrincipalReviewInput(
   const priority = (body as { priority?: unknown }).priority;
   const outputRequirement =
     (body as { outputRequirement?: unknown }).outputRequirement;
+  const outputType = (body as { outputType?: unknown }).outputType;
+  const deadline = (body as { deadline?: unknown }).deadline;
   const principalNote = (body as { principalNote?: unknown }).principalNote;
 
   if (
@@ -3523,6 +3817,14 @@ function getPrincipalReviewInput(
       outputRequirement:
         typeof outputRequirement === "string" && outputRequirement.trim().length > 0
           ? outputRequirement.trim()
+          : null,
+      outputType:
+        typeof outputType === "string" && outputType.trim().length > 0
+          ? (outputType.trim() as import("../../../packages/shared-types/index.js").WorkItemOutputType)
+          : null,
+      deadline:
+        typeof deadline === "string" && deadline.trim().length > 0
+          ? deadline.trim()
           : null,
       principalNote:
         typeof principalNote === "string" && principalNote.trim().length > 0

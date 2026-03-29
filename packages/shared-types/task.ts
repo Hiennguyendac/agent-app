@@ -62,6 +62,20 @@ export interface Task {
 
   completedAt?: string;
 
+  reportSubmittedAt?: string;
+
+  reportNote?: string;
+
+  qualityCheckPassed?: boolean;
+
+  qualityCheckNote?: string;
+
+  qualityCheckedAt?: string;
+
+  principalApprovedAt?: string;
+
+  principalApprovalNote?: string;
+
   /**
    * The current state of the task.
    */

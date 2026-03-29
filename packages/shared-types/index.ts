@@ -2,7 +2,7 @@ export type { TaskType } from "./task-type";
 export type { TaskStatus } from "./task-status";
 export type { Task } from "./task";
 export type { TaskResult } from "./task-result";
-export type { TaskExecutionStatus, TaskUpdate } from "./task-update";
+export type { TaskExecutionStatus, TaskUpdate, TaskUpdateFile } from "./task-update";
 export type {
   SubmissionReview,
   SubmissionReviewOutcome,
@@ -12,7 +12,7 @@ export type { AppUserRole } from "./app-user-role";
 export type { Department } from "./department";
 export type { AppUserProfile } from "./app-user-profile";
 export type { WorkItemStatus } from "./work-item-status";
-export type { WorkItem } from "./work-item";
+export type { WorkItem, WorkItemSourceType, WorkItemOutputType } from "./work-item";
 export type { WorkItemFile } from "./work-item-file";
 export type { AiAnalysis } from "./ai-analysis";
 export type { AssignmentPriority } from "./assignment-priority";

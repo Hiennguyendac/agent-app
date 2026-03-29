@@ -39,6 +39,13 @@ interface Task {
   progressPercent?: number;
   acceptedAt?: string;
   completedAt?: string;
+  reportSubmittedAt?: string;
+  reportNote?: string;
+  qualityCheckPassed?: boolean;
+  qualityCheckNote?: string;
+  qualityCheckedAt?: string;
+  principalApprovedAt?: string;
+  principalApprovalNote?: string;
   status: TaskStatus;
   createdAt: string;
 }
@@ -151,11 +158,32 @@ interface SessionResponse {
   user: AppUserProfile | null;
 }
 
+type WorkItemSourceType =
+  | "incoming_document"
+  | "internal_directive"
+  | "plan"
+  | "spontaneous_task"
+  | "department_request"
+  | "work_schedule";
+
+type WorkItemOutputType =
+  | "report"
+  | "plan_document"
+  | "minutes"
+  | "list"
+  | "proposal"
+  | "evidence_files"
+  | "other";
+
 interface WorkItem {
   id: string;
   title: string;
   description: string;
   status: WorkItemStatus;
+  sourceType?: WorkItemSourceType;
+  intakeCode?: string;
+  deadline?: string;
+  outputType?: WorkItemOutputType;
   departmentId?: string;
   leadDepartmentId?: string;
   coordinatingDepartmentIds: string[];
@@ -373,6 +401,7 @@ let currentView:
 let currentDocumentSearch = "";
 let currentWorkItemSearch = "";
 let currentDepartmentTaskStatusFilter = "all";
+let currentWorkItemStatusFilter = "active";
 
 const TASK_TEMPLATES: Record<string, TaskTemplate> = {
   blogSeo: {
@@ -415,25 +444,25 @@ app.innerHTML = `
   <main class="app-shell">
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <p class="eyebrow">School Workflow App</p>
-        <h1>Internal Operations</h1>
-        <p class="intro">Document intake, work items, assignments, and department execution from one place.</p>
+        <p class="eyebrow">Hệ thống Quản lý Công việc</p>
+        <h1>Nội bộ trường học</h1>
+        <p class="intro">Tiếp nhận, phân luồng, giao việc và theo dõi thực hiện tập trung từ một nơi.</p>
       </div>
       <nav class="sidebar-nav" aria-label="Primary">
-        <button class="nav-button" type="button" data-view="overview">Overview</button>
-        <button class="nav-button" type="button" data-view="documents">Intake Inbox</button>
-        <button class="nav-button" type="button" data-view="approvals">Principal Routing</button>
-        <button class="nav-button" type="button" data-view="department-tasks">Department Execution</button>
-        <button class="nav-button" type="button" data-view="work-items">Records</button>
-        <button class="nav-button" type="button" data-view="reports">Reports</button>
-        <button class="nav-button" type="button" data-view="admin">Admin</button>
-        <button class="nav-button" type="button" data-view="account">Account</button>
-        <button class="nav-button" type="button" data-view="legacy">Legacy</button>
+        <button class="nav-button" type="button" data-view="overview">📊 Tổng quan</button>
+        <button class="nav-button" type="button" data-view="documents">📥 Tiếp nhận</button>
+        <button class="nav-button" type="button" data-view="approvals">⚖️ Phân luồng HT</button>
+        <button class="nav-button" type="button" data-view="department-tasks">🏃 Thực hiện</button>
+        <button class="nav-button" type="button" data-view="work-items">📂 Hồ sơ</button>
+        <button class="nav-button" type="button" data-view="reports">📈 Báo cáo</button>
+        <button class="nav-button" type="button" data-view="admin">⚙️ Quản trị</button>
+        <button class="nav-button" type="button" data-view="account">👤 Tài khoản</button>
+        <button class="nav-button" type="button" data-view="legacy">🔧 Legacy</button>
       </nav>
       <section class="sidebar-account">
-        <p class="detail-label">Active Identity</p>
-        <p id="session-user" class="mock-user-active">Session user: checking...</p>
-        <p id="identity-source" class="identity-source-note">Active identity: checking...</p>
+        <p class="detail-label">Người dùng hiện tại</p>
+        <p id="session-user" class="mock-user-active">Đang kiểm tra phiên...</p>
+        <p id="identity-source" class="identity-source-note">Đang xác thực...</p>
         <p id="active-user" class="identity-source-note"></p>
       </section>
     </aside>
@@ -441,17 +470,17 @@ app.innerHTML = `
     <section class="app-main">
       <header class="topbar panel">
         <div class="topbar-copy">
-          <p id="view-eyebrow" class="eyebrow">Overview</p>
-          <h2 id="view-title">Document Intake Overview</h2>
+          <p id="view-eyebrow" class="eyebrow">Tổng quan</p>
+          <h2 id="view-title">Hệ thống Quản lý Công việc</h2>
           <p id="view-description" class="intro">
-            Upload school documents, review extracted intake, and create work items from verified records.
+            Tải văn bản, xem tóm tắt AI và tạo hồ sơ công việc từ các văn bản đã xác minh.
           </p>
         </div>
         <section class="account-card" aria-label="Current account">
-          <p class="detail-label">Account</p>
-          <p class="detail-value">Login, password change, and session controls live in the Account view.</p>
+          <p class="detail-label">Tài khoản</p>
+          <p class="detail-value">Đăng nhập, đổi mật khẩu và điều khiển phiên làm việc.</p>
           <div class="auth-actions">
-            <button class="secondary-button" type="button" data-view="account">Open Account</button>
+            <button class="secondary-button" type="button" data-view="account">Mở tài khoản</button>
           </div>
         </section>
       </header>
@@ -465,29 +494,29 @@ app.innerHTML = `
         <div class="overview-grid">
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Overview</p>
-              <h3>Operational KPIs</h3>
+              <p class="eyebrow">Tổng quan vận hành</p>
+              <h3>KPI theo giai đoạn</h3>
             </div>
-            <div id="overview-cards" class="overview-cards"></div>
+            <div id="overview-cards" class="metric-cards-grid"></div>
           </section>
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Attention</p>
-              <h3>Needs Attention</h3>
+              <p class="eyebrow">Cần xử lý</p>
+              <h3>Việc cần chú ý</h3>
             </div>
             <div id="needs-attention-panel" class="admin-list"></div>
           </section>
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Activity</p>
-              <h3>Recent Activity</h3>
+              <p class="eyebrow">Hoạt động</p>
+              <h3>Hoạt động gần đây</h3>
             </div>
             <div id="recent-activity-panel" class="admin-list"></div>
           </section>
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Departments</p>
-              <h3>By Department</h3>
+              <p class="eyebrow">Theo đơn vị</p>
+              <h3>Tóm tắt các đơn vị</h3>
             </div>
             <div id="by-department-panel" class="admin-list"></div>
           </section>
@@ -498,36 +527,37 @@ app.innerHTML = `
         <div class="panel">
           <div class="tasks-header">
             <div>
-              <p class="eyebrow">Step 1</p>
-              <h3>Intake Inbox</h3>
+              <p class="eyebrow">Giai đoạn 1</p>
+              <h3>Tiếp nhận văn bản / Công việc</h3>
             </div>
-            <button id="refresh-documents-button" class="secondary-button" type="button">Refresh Documents</button>
+            <button id="refresh-documents-button" class="secondary-button" type="button">Làm mới</button>
           </div>
           <p class="intro workflow-note">
-            Upload incoming school documents, review extracted context, then create the principal-facing record.
+            Văn thư tải lên văn bản đến, nhập thông tin và chuyển cho Hiệu trưởng xem xét.
+            AI Agent sẽ tự động phân tích nội dung và gợi ý phân loại.
           </p>
 
           <div class="toolbar-row compact-toolbar">
             <div class="field">
-              <label for="document-search">Search documents</label>
-              <input id="document-search" type="text" placeholder="Search filename, extracted text, uploader" />
+              <label for="document-search">Tìm kiếm văn bản</label>
+              <input id="document-search" type="text" placeholder="Tên file, nội dung trích xuất, người tải lên..." />
             </div>
             <details class="inline-disclosure">
-              <summary>Upload New Document</summary>
+              <summary>Tải lên văn bản mới</summary>
               <form id="document-form" class="task-form disclosure-form" novalidate>
                 <div class="field">
-                  <label for="document-file">Upload school document</label>
+                  <label for="document-file">File văn bản</label>
                   <input id="document-file" name="documentFile" type="file" multiple />
                 </div>
                 <div class="field">
-                  <label for="document-title">Document note</label>
-                  <input id="document-title" name="documentTitle" type="text" placeholder="Incoming request from parent or department" />
+                  <label for="document-title">Ghi chú</label>
+                  <input id="document-title" name="documentTitle" type="text" placeholder="Văn bản đến từ Sở/Phòng/Phụ huynh..." />
                 </div>
                 <div class="field">
-                  <label for="document-metadata">Metadata JSON</label>
-                  <textarea id="document-metadata" name="documentMetadata" rows="3" placeholder='{"source":"front-office","channel":"email"}'></textarea>
+                  <label for="document-metadata">Thông tin bổ sung (JSON)</label>
+                  <textarea id="document-metadata" name="documentMetadata" rows="2" placeholder='{"nguon":"cong-van","kenh":"email"}'></textarea>
                 </div>
-                <button id="create-document-button" class="primary-button" type="submit">Upload Document(s)</button>
+                <button id="create-document-button" class="primary-button" type="submit">Tải lên văn bản</button>
               </form>
             </details>
           </div>
@@ -535,7 +565,7 @@ app.innerHTML = `
           <div class="work-item-layout app-split-layout">
             <div id="document-list" class="task-list split-list"></div>
             <section id="document-detail" class="result-card split-detail hidden">
-              <h3 id="document-detail-title">Document Detail</h3>
+              <h3 id="document-detail-title">Chi tiết văn bản</h3>
               <p id="document-detail-meta" class="result-meta"></p>
               <div id="document-detail-body" class="work-item-detail-body"></div>
             </section>
@@ -547,51 +577,94 @@ app.innerHTML = `
         <div class="panel">
           <div class="tasks-header">
             <div>
-              <p class="eyebrow">Records</p>
-              <h3>Work Item Records</h3>
+              <p class="eyebrow">Hồ sơ công việc</p>
+              <h3>Quản lý hồ sơ</h3>
             </div>
-            <button id="refresh-work-items-button" class="secondary-button" type="button">Refresh Work Items</button>
+            <button id="refresh-work-items-button" class="secondary-button" type="button">Làm mới</button>
           </div>
           <p class="intro workflow-note">
-            This is the case record view. Use it when you need the full file, assignment, history, and review context.
+            Toàn bộ hồ sơ công việc từ khi tiếp nhận đến lưu trữ. Xem trạng thái, lịch sử và hồ sơ đính kèm.
           </p>
+          <div class="status-filter-tabs" id="work-item-status-tabs" style="margin-bottom:12px">
+            <button class="tab-button is-active" type="button" data-wi-status-filter="active">Đang xử lý</button>
+            <button class="tab-button" type="button" data-wi-status-filter="completed">Hoàn thành</button>
+            <button class="tab-button" type="button" data-wi-status-filter="archived">Lưu trữ</button>
+            <button class="tab-button" type="button" data-wi-status-filter="all">Tất cả</button>
+          </div>
 
           <div class="toolbar-row compact-toolbar">
             <div class="field">
               <label for="work-item-search">Search work items</label>
-              <input id="work-item-search" type="text" placeholder="Search title, description, creator" />
+              <input id="work-item-search" type="text" placeholder="Tìm tiêu đề, mô tả, mã hồ sơ..." />
             </div>
             <details class="inline-disclosure">
-              <summary>Create Work Item</summary>
+              <summary>Tạo hồ sơ công việc mới</summary>
               <form id="work-item-form" class="task-form disclosure-form" novalidate>
-                <div class="field">
-                  <label for="work-item-title">Work item title</label>
-                  <input id="work-item-title" name="workItemTitle" type="text" placeholder="Teacher leave request review" />
+                <div class="form-row-2col">
+                  <div class="field">
+                    <label for="work-item-intake-code">Mã hồ sơ</label>
+                    <input id="work-item-intake-code" name="intakeCode" type="text" placeholder="VB-2024-001" />
+                  </div>
+                  <div class="field">
+                    <label for="work-item-source-type">Nguồn vào</label>
+                    <select id="work-item-source-type" name="sourceType">
+                      <option value="">-- Chọn nguồn --</option>
+                      <option value="incoming_document">Công văn đến</option>
+                      <option value="internal_directive">Chỉ đạo nội bộ</option>
+                      <option value="plan">Kế hoạch</option>
+                      <option value="spontaneous_task">Nhiệm vụ phát sinh</option>
+                      <option value="department_request">Đề nghị từ bộ phận</option>
+                      <option value="work_schedule">Lịch công tác</option>
+                    </select>
+                  </div>
                 </div>
                 <div class="field">
-                  <label for="work-item-description">Description</label>
-                  <textarea id="work-item-description" name="workItemDescription" rows="3" placeholder="Describe the school workflow item"></textarea>
+                  <label for="work-item-title">Tiêu đề công việc / văn bản</label>
+                  <input id="work-item-title" name="workItemTitle" type="text" placeholder="VD: Triển khai kế hoạch tuyển sinh tháng 4" />
                 </div>
                 <div class="field">
-                  <label for="work-item-department">Department</label>
+                  <label for="work-item-description">Nội dung / Mô tả</label>
+                  <textarea id="work-item-description" name="workItemDescription" rows="3" placeholder="Mô tả chi tiết nội dung công việc hoặc văn bản..."></textarea>
+                </div>
+                <div class="form-row-2col">
+                  <div class="field">
+                    <label for="work-item-output-type">Loại đầu ra yêu cầu</label>
+                    <select id="work-item-output-type" name="outputType">
+                      <option value="">-- Chọn loại đầu ra --</option>
+                      <option value="report">Báo cáo văn bản</option>
+                      <option value="plan_document">Kế hoạch thực hiện</option>
+                      <option value="minutes">Biên bản</option>
+                      <option value="list">Danh sách</option>
+                      <option value="proposal">Đề xuất phương án</option>
+                      <option value="evidence_files">Minh chứng file/hình ảnh</option>
+                      <option value="other">Khác</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="work-item-deadline">Thời hạn xử lý sơ bộ</label>
+                    <input id="work-item-deadline" name="deadline" type="datetime-local" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="work-item-department">Đơn vị sơ bộ</label>
                   <select id="work-item-department" name="workItemDepartment">
-                    <option value="">No department</option>
+                    <option value="">-- Chưa xác định --</option>
                   </select>
                 </div>
-                <button id="create-work-item-button" class="primary-button" type="submit">Create Work Item</button>
+                <button id="create-work-item-button" class="primary-button" type="submit">Tạo hồ sơ &amp; Chuyển HT xem</button>
               </form>
             </details>
           </div>
 
           <section id="department-task-queue" class="result-card hidden">
-            <h3>Department Task Queue</h3>
+            <h3>Hàng chờ nhiệm vụ đơn vị</h3>
             <div id="department-task-queue-list" class="work-item-queue"></div>
           </section>
 
           <div class="work-item-layout app-split-layout">
             <div id="work-item-list" class="task-list split-list"></div>
             <section id="work-item-detail" class="result-card split-detail hidden">
-              <h3 id="work-item-detail-title">Work Item Detail</h3>
+              <h3 id="work-item-detail-title">Chi tiết hồ sơ</h3>
               <p id="work-item-detail-meta" class="result-meta"></p>
               <div id="work-item-detail-body" class="work-item-detail-body"></div>
             </section>
@@ -603,15 +676,15 @@ app.innerHTML = `
         <div class="overview-grid">
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Assignments</p>
-              <h3>Waiting Assignment Queue</h3>
+              <p class="eyebrow">Giao việc</p>
+              <h3>Hàng chờ giao việc</h3>
             </div>
             <div id="assignment-queue" class="work-item-queue"></div>
           </section>
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Assignments</p>
-              <h3>Assignment Workspace</h3>
+              <p class="eyebrow">Giao việc</p>
+              <h3>Không gian giao việc</h3>
             </div>
             <div id="assignment-workspace" class="admin-list"></div>
             <div id="assignment-list" class="admin-list"></div>
@@ -623,21 +696,21 @@ app.innerHTML = `
         <div class="panel">
           <div class="tasks-header">
             <div>
-              <p class="eyebrow">Step 4</p>
-              <h3>Department Execution</h3>
+              <p class="eyebrow">Giai đoạn 4 – Đơn vị thực hiện</p>
+              <h3>Thực hiện công việc</h3>
             </div>
-            <button id="refresh-button" class="secondary-button" type="button">Refresh Tasks</button>
+            <button id="refresh-button" class="secondary-button" type="button">Làm mới</button>
           </div>
           <p class="intro workflow-note">
-            Open the assigned task, update progress, attach evidence, and submit the department response for review.
+            Mở nhiệm vụ được giao, xác nhận tiếp nhận, cập nhật tiến độ, đính kèm minh chứng và nộp báo cáo kết quả.
           </p>
           <div class="toolbar-row">
             <div class="status-filter-tabs" id="department-task-status-tabs">
-              <button class="tab-button is-active" type="button" data-status-filter="all">All</button>
-              <button class="tab-button" type="button" data-status-filter="pending">Pending</button>
-              <button class="tab-button" type="button" data-status-filter="running">Running</button>
-              <button class="tab-button" type="button" data-status-filter="completed">Completed</button>
-              <button class="tab-button" type="button" data-status-filter="failed">Failed</button>
+              <button class="tab-button is-active" type="button" data-status-filter="all">Tất cả</button>
+              <button class="tab-button" type="button" data-status-filter="pending">Chờ tiếp nhận</button>
+              <button class="tab-button" type="button" data-status-filter="running">Đang thực hiện</button>
+              <button class="tab-button" type="button" data-status-filter="completed">Hoàn thành</button>
+              <button class="tab-button" type="button" data-status-filter="failed">Thất bại</button>
             </div>
             <select id="department-task-status-filter" class="hidden">
               <option value="all">All</option>
@@ -650,7 +723,7 @@ app.innerHTML = `
           <div class="work-item-layout app-split-layout">
             <div id="task-list" class="task-list split-list"></div>
             <section id="department-task-detail" class="result-card split-detail hidden">
-              <h3 id="department-task-detail-title">Task Detail</h3>
+              <h3 id="department-task-detail-title">Chi tiết nhiệm vụ</h3>
               <p id="department-task-detail-meta" class="result-meta"></p>
               <div id="department-task-detail-body" class="work-item-detail-body"></div>
             </section>
@@ -662,15 +735,16 @@ app.innerHTML = `
         <div class="overview-grid">
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Step 2</p>
-              <h3>Principal Routing Queue</h3>
+              <p class="eyebrow">Giai đoạn 2 – Hiệu trưởng</p>
+              <h3>Hàng chờ xem xét &amp; phê duyệt</h3>
+              <p class="intro">HT xem văn bản, gợi ý AI, chọn hướng xử lý và giao việc cho đơn vị.</p>
             </div>
             <div id="approvals-queue" class="work-item-queue"></div>
           </section>
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Step 2 & 3</p>
-              <h3>Routing & Assignment Workspace</h3>
+              <p class="eyebrow">Giai đoạn 2 &amp; 3</p>
+              <h3>Không gian phân luồng &amp; giao việc</h3>
             </div>
             <div id="approvals-assignment-list" class="admin-list"></div>
           </section>
@@ -679,41 +753,50 @@ app.innerHTML = `
 
       <section id="reports-view" class="content-view hidden">
         <div class="panel">
-          <div class="panel-header">
-            <p class="eyebrow">Reports</p>
-            <h3>Operational Summary</h3>
+          <div class="tasks-header">
+            <div>
+              <p class="eyebrow">Báo cáo Agent</p>
+              <h3>Tổng hợp vận hành</h3>
+            </div>
+            <div class="button-row">
+              <button id="load-daily-report-button" class="secondary-button" type="button">Báo cáo ngày</button>
+              <button id="load-weekly-report-button" class="secondary-button" type="button">Báo cáo tuần</button>
+              <button id="run-reminders-button" class="primary-button" type="button">Chạy nhắc deadline</button>
+            </div>
           </div>
           <div id="report-cards" class="overview-cards"></div>
+          <div id="report-attention-list" class="admin-list" style="margin-top:16px"></div>
+          <div id="report-department-table" style="margin-top:16px"></div>
         </div>
       </section>
 
       <section id="admin-view" class="content-view hidden">
         <section id="admin-panel" class="panel hidden" aria-label="School admin">
           <div class="panel-header">
-            <p class="eyebrow">Admin</p>
-            <h3>Departments & User Assignment</h3>
-            <p class="intro">Principal-only setup for departments and user assignment.</p>
+            <p class="eyebrow">Quản trị</p>
+            <h3>Đơn vị &amp; Phân công người dùng</h3>
+            <p class="intro">Chỉ Hiệu trưởng mới được cài đặt đơn vị và phân công vai trò người dùng.</p>
           </div>
           <div class="detail-tabs">
-            <button class="tab-button is-active" type="button" data-admin-tab="departments">Departments</button>
-            <button class="tab-button" type="button" data-admin-tab="users">Users</button>
+            <button class="tab-button is-active" type="button" data-admin-tab="departments">Đơn vị</button>
+            <button class="tab-button" type="button" data-admin-tab="users">Người dùng</button>
           </div>
           <div class="admin-section">
             <div class="admin-card" data-admin-panel="departments">
-              <h3>Departments</h3>
+              <h3>Danh sách đơn vị</h3>
               <details class="inline-disclosure">
-                <summary>Add Department</summary>
+                <summary>Thêm đơn vị mới</summary>
                 <div class="admin-form-row disclosure-form">
                   <div class="field">
-                    <label for="department-name">Department name</label>
-                    <input id="department-name" name="departmentName" type="text" placeholder="Academic Affairs" />
+                    <label for="department-name">Tên đơn vị</label>
+                    <input id="department-name" name="departmentName" type="text" placeholder="Phòng Đào tạo" />
                   </div>
                   <div class="field">
-                    <label for="department-code">Department code</label>
-                    <input id="department-code" name="departmentCode" type="text" placeholder="ACADEMIC" />
+                    <label for="department-code">Mã đơn vị</label>
+                    <input id="department-code" name="departmentCode" type="text" placeholder="DAO_TAO" />
                   </div>
                   <div class="auth-actions">
-                    <button id="create-department-button" class="secondary-button" type="button">Add Department</button>
+                    <button id="create-department-button" class="secondary-button" type="button">Thêm đơn vị</button>
                   </div>
                 </div>
               </details>
@@ -721,54 +804,54 @@ app.innerHTML = `
             </div>
 
             <div class="admin-card hidden" data-admin-panel="users">
-              <h3>User Assignment</h3>
+              <h3>Phân công người dùng</h3>
               <details class="inline-disclosure" open>
-                <summary>Add User</summary>
+                <summary>Thêm người dùng mới</summary>
                 <article class="admin-item disclosure-form">
                   <div class="admin-user-header">
-                    <strong>Create internal account</strong>
-                    <span>Role and department can be set immediately</span>
+                    <strong>Tạo tài khoản nội bộ</strong>
+                    <span>Có thể đặt vai trò và đơn vị ngay khi tạo</span>
                   </div>
                   <div class="admin-item-grid">
                     <div class="field">
-                      <label for="create-user-username">Username</label>
-                      <input id="create-user-username" type="text" placeholder="new.user" />
+                      <label for="create-user-username">Tên đăng nhập</label>
+                      <input id="create-user-username" type="text" placeholder="nguyen.van.a" />
                     </div>
                     <div class="field">
-                      <label for="create-user-display-name">Display name</label>
-                      <input id="create-user-display-name" type="text" placeholder="New User" />
+                      <label for="create-user-display-name">Tên hiển thị</label>
+                      <input id="create-user-display-name" type="text" placeholder="Nguyễn Văn A" />
                     </div>
                     <div class="field">
-                      <label for="create-user-password">Password</label>
-                      <input id="create-user-password" type="password" placeholder="At least 10 characters" />
+                      <label for="create-user-password">Mật khẩu</label>
+                      <input id="create-user-password" type="password" placeholder="Ít nhất 10 ký tự" />
                     </div>
                     <div class="field">
-                      <label for="create-user-role">Role</label>
+                      <label for="create-user-role">Vai trò</label>
                       <select id="create-user-role">
-                        <option value="admin">admin</option>
-                        <option value="principal">principal</option>
-                        <option value="department_head">department_head</option>
-                        <option value="staff" selected>staff</option>
-                        <option value="clerk">clerk</option>
+                        <option value="admin">Quản trị viên (admin)</option>
+                        <option value="principal">Hiệu trưởng (principal)</option>
+                        <option value="department_head">Trưởng khoa (department_head)</option>
+                        <option value="staff" selected>Cán bộ (staff)</option>
+                        <option value="clerk">Văn thư (clerk)</option>
                       </select>
                     </div>
                     <div class="field">
-                      <label for="create-user-department">Department</label>
+                      <label for="create-user-department">Đơn vị</label>
                       <select id="create-user-department">
-                        <option value="">No department</option>
+                        <option value="">-- Chưa phân công --</option>
                       </select>
                     </div>
                     <div class="field">
-                      <label for="create-user-position">Position</label>
-                      <input id="create-user-position" type="text" placeholder="Coordinator" />
+                      <label for="create-user-position">Chức vụ</label>
+                      <input id="create-user-position" type="text" placeholder="Chuyên viên" />
                     </div>
                     <label class="checkbox-field">
                       <input id="create-user-active" type="checkbox" checked />
-                      Active
+                      Kích hoạt tài khoản
                     </label>
                     <div class="auth-actions">
                       <button id="create-user-button" class="secondary-button" type="button">
-                        Add User
+                        Thêm người dùng
                       </button>
                     </div>
                   </div>
@@ -784,47 +867,47 @@ app.innerHTML = `
         <div class="overview-grid">
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Account</p>
-              <h3>Session Access</h3>
+              <p class="eyebrow">Tài khoản</p>
+              <h3>Đăng nhập / Đăng xuất</h3>
             </div>
             <div id="account-summary" class="admin-item"></div>
             <div class="account-grid">
               <div class="field">
-                <label for="username">Username</label>
+                <label for="username">Tên đăng nhập</label>
                 <input id="username" name="username" type="text" placeholder="alice" />
               </div>
               <div class="field">
-                <label for="password">Password</label>
-                <input id="password" name="password" type="password" placeholder="Enter password" />
+                <label for="password">Mật khẩu</label>
+                <input id="password" name="password" type="password" placeholder="Nhập mật khẩu" />
               </div>
               <div class="auth-actions">
-                <button id="login-button" class="primary-button" type="button">Log In</button>
-                <button id="logout-button" class="secondary-button" type="button">Log Out</button>
+                <button id="login-button" class="primary-button" type="button">Đăng nhập</button>
+                <button id="logout-button" class="secondary-button" type="button">Đăng xuất</button>
               </div>
             </div>
           </section>
 
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Account</p>
-              <h3>Password & Dev Fallback</h3>
+              <p class="eyebrow">Tài khoản</p>
+              <h3>Đổi mật khẩu &amp; Dev fallback</h3>
             </div>
             <div class="auth-panel-row">
               <div class="field">
-                <label for="current-password">Current password</label>
-                <input id="current-password" name="currentPassword" type="password" placeholder="Current password" />
+                <label for="current-password">Mật khẩu hiện tại</label>
+                <input id="current-password" name="currentPassword" type="password" placeholder="Mật khẩu hiện tại" />
               </div>
               <div class="field">
-                <label for="new-password">New password</label>
-                <input id="new-password" name="newPassword" type="password" placeholder="New password" />
+                <label for="new-password">Mật khẩu mới</label>
+                <input id="new-password" name="newPassword" type="password" placeholder="Mật khẩu mới" />
               </div>
               <div class="auth-actions">
-                <button id="change-password-button" class="secondary-button" type="button">Change Password</button>
+                <button id="change-password-button" class="secondary-button" type="button">Đổi mật khẩu</button>
               </div>
             </div>
             <div class="auth-panel-row">
               <div class="field">
-                <label for="mock-user-id">Mock user id</label>
+                <label for="mock-user-id">ID người dùng (dev)</label>
                 <input
                   id="mock-user-id"
                   name="mockUserId"
@@ -842,15 +925,15 @@ app.innerHTML = `
         <div class="legacy-grid">
           <section class="panel">
             <div class="panel-header">
-              <p class="eyebrow">Legacy</p>
-              <h3>Growth Tasks</h3>
-              <p class="intro">Legacy growth tooling is still available, but no longer drives the main layout.</p>
+              <p class="eyebrow">Cũ (Legacy)</p>
+              <h3>Công việc tăng trưởng</h3>
+              <p class="intro">Công cụ cũ vẫn khả dụng nhưng không còn là luồng chính của nhà trường.</p>
             </div>
             <form id="task-form" class="task-form" novalidate>
               <div class="field">
-                <label for="template">Template</label>
+                <label for="template">Mẫu nội dung</label>
                 <select id="template" name="template">
-                  <option value="">Choose a content template</option>
+                  <option value="">-- Chọn mẫu --</option>
                   <option value="blogSeo">Blog SEO</option>
                   <option value="facebookPost">Facebook Post</option>
                   <option value="salesEmail">Sales Email</option>
@@ -858,25 +941,25 @@ app.innerHTML = `
                 </select>
               </div>
               <div class="field">
-                <label for="title">Task title</label>
-                <input id="title" name="title" type="text" placeholder="Write blog ideas" required />
+                <label for="title">Tiêu đề nhiệm vụ</label>
+                <input id="title" name="title" type="text" placeholder="Viết ý tưởng blog" required />
                 <p id="title-error" class="field-error hidden" aria-live="polite"></p>
               </div>
               <div class="field">
-                <label for="goal">Goal</label>
-                <textarea id="goal" name="goal" rows="3" placeholder="Create content ideas for a small agency" required></textarea>
+                <label for="goal">Mục tiêu</label>
+                <textarea id="goal" name="goal" rows="3" placeholder="Tạo ý tưởng nội dung cho agency nhỏ" required></textarea>
                 <p id="goal-error" class="field-error hidden" aria-live="polite"></p>
               </div>
               <div class="field">
-                <label for="audience">Audience</label>
-                <input id="audience" name="audience" type="text" placeholder="Small business owners" required />
+                <label for="audience">Đối tượng</label>
+                <input id="audience" name="audience" type="text" placeholder="Chủ doanh nghiệp nhỏ" required />
                 <p id="audience-error" class="field-error hidden" aria-live="polite"></p>
               </div>
               <div class="field">
-                <label for="notes">Notes</label>
-                <textarea id="notes" name="notes" rows="3" placeholder="Optional extra notes"></textarea>
+                <label for="notes">Ghi chú</label>
+                <textarea id="notes" name="notes" rows="3" placeholder="Ghi chú bổ sung (tùy chọn)"></textarea>
               </div>
-              <button id="submit-button" class="primary-button" type="submit">Create Growth Task</button>
+              <button id="submit-button" class="primary-button" type="submit">Tạo nhiệm vụ</button>
             </form>
           </section>
 
@@ -910,8 +993,8 @@ app.innerHTML = `
       >
         <header class="task-modal-header">
           <div class="task-modal-heading">
-            <p class="eyebrow">Task Detail</p>
-            <h3 id="task-modal-title">Task Detail</h3>
+            <p class="eyebrow">Chi tiết nhiệm vụ</p>
+            <h3 id="task-modal-title">Chi tiết nhiệm vụ</h3>
             <p id="task-modal-meta" class="result-meta"></p>
           </div>
           <button
@@ -942,8 +1025,8 @@ app.innerHTML = `
       >
         <header class="task-modal-header">
           <div class="task-modal-heading">
-            <p class="eyebrow">Document Detail</p>
-            <h3 id="document-modal-title">Document Detail</h3>
+            <p class="eyebrow">Chi tiết văn bản</p>
+            <h3 id="document-modal-title">Chi tiết văn bản</h3>
             <p id="document-modal-meta" class="result-meta"></p>
           </div>
           <button
@@ -974,8 +1057,8 @@ app.innerHTML = `
       >
         <header class="task-modal-header">
           <div class="task-modal-heading">
-            <p class="eyebrow">Record Detail</p>
-            <h3 id="work-item-modal-title">Work Item Detail</h3>
+            <p class="eyebrow">Chi tiết hồ sơ</p>
+            <h3 id="work-item-modal-title">Chi tiết hồ sơ</h3>
             <p id="work-item-modal-meta" class="result-meta"></p>
           </div>
           <button
@@ -1384,6 +1467,16 @@ workItemSearchInput.addEventListener("input", () => {
   renderWorkItemList(currentWorkItems);
 });
 
+document.querySelector("#work-item-status-tabs")?.addEventListener("click", (e) => {
+  const button = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-wi-status-filter]");
+  if (!button) return;
+  currentWorkItemStatusFilter = button.dataset.wiStatusFilter ?? "active";
+  document.querySelectorAll("#work-item-status-tabs .tab-button").forEach((b) =>
+    b.classList.toggle("is-active", b === button)
+  );
+  renderWorkItemList(currentWorkItems);
+});
+
 documentSearchInput.addEventListener("input", () => {
   currentDocumentSearch = documentSearchInput.value.trim().toLowerCase();
   renderDocumentList(currentDocuments);
@@ -1642,6 +1735,22 @@ refreshDocumentsButton.addEventListener("click", async () => {
   await loadDocuments();
 });
 
+// Report view buttons
+document.querySelector<HTMLButtonElement>("#load-daily-report-button")
+  ?.addEventListener("click", async () => {
+    await loadAndRenderDailyReport();
+  });
+
+document.querySelector<HTMLButtonElement>("#load-weekly-report-button")
+  ?.addEventListener("click", async () => {
+    await loadAndRenderWeeklyReport();
+  });
+
+document.querySelector<HTMLButtonElement>("#run-reminders-button")
+  ?.addEventListener("click", async () => {
+    await handleRunDeadlineReminders();
+  });
+
 documentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await handleCreateDocument();
@@ -1669,8 +1778,13 @@ workItemForm.addEventListener("submit", async (event) => {
     return;
   }
 
+  const intakeCodeInput = document.querySelector<HTMLInputElement>("#work-item-intake-code");
+  const sourceTypeSelect = document.querySelector<HTMLSelectElement>("#work-item-source-type");
+  const outputTypeSelect = document.querySelector<HTMLSelectElement>("#work-item-output-type");
+  const deadlineInput = document.querySelector<HTMLInputElement>("#work-item-deadline");
+
   createWorkItemButton.disabled = true;
-  setStatus("Creating work item...", "loading");
+  setStatus("Đang tạo hồ sơ công việc...", "loading");
 
   try {
     const response = await fetch("/api/work-items", {
@@ -1681,27 +1795,42 @@ workItemForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         title,
         description,
-        departmentId: departmentId || undefined
+        departmentId: departmentId || undefined,
+        intakeCode: intakeCodeInput?.value.trim() || undefined,
+        sourceType: sourceTypeSelect?.value || undefined,
+        outputType: outputTypeSelect?.value || undefined,
+        deadline: deadlineInput?.value ? new Date(deadlineInput.value).toISOString() : undefined
       })
     });
 
     if (!response.ok) {
       throw new Error(
-        await readApiError(response, "The API could not create the work item")
+        await readApiError(response, "Không thể tạo hồ sơ công việc")
       );
     }
 
     const data = (await response.json()) as WorkItemResponse;
     workItemForm.reset();
     workItemDepartmentSelect.value = "";
+
+    // Auto-trigger AI analysis after creation
+    try {
+      await fetch(`/api/work-items/${encodeURIComponent(data.workItem.id)}/analyze`, {
+        method: "POST",
+        headers: buildApiHeaders()
+      });
+    } catch {
+      // AI analysis failure is non-fatal
+    }
+
     await loadWorkItems();
     selectWorkItemById(data.workItem.id);
-    setStatus("Work item created successfully.", "success");
+    setStatus("Hồ sơ đã tạo. AI Agent đang phân tích nội dung...", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while creating the work item.",
+        : "Đã xảy ra lỗi khi tạo hồ sơ công việc.",
       "error"
     );
   } finally {
@@ -1879,7 +2008,7 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
   if (queueItems.length === 0) {
     departmentTaskQueueList.innerHTML = `
       <div class="empty-state">
-        No department assignment tasks are visible for the current user.
+        Chưa có nhiệm vụ giao việc nào hiển thị cho người dùng hiện tại.
       </div>
     `;
     return;
@@ -1895,10 +2024,10 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
               ${escapeHtml(item.task.status)}
             </span>
           </div>
-          <p><strong>Department:</strong> ${escapeHtml(item.task.ownerDepartmentId ?? "none")}</p>
+          <p><strong>Department:</strong> ${escapeHtml(item.task.ownerDepartmentId ?? "—")}</p>
           <p><strong>Assignment Status:</strong> ${escapeHtml(getAssignmentStatusForTask(item.task.assignmentId))}</p>
           <p><strong>Progress:</strong> ${escapeHtml(String(item.task.progressPercent ?? 0))}%</p>
-          <p><strong>Linked Work Item:</strong> ${escapeHtml(item.task.workItemId ?? "none")}</p>
+          <p><strong>Linked Work Item:</strong> ${escapeHtml(item.task.workItemId ?? "—")}</p>
           <p class="workflow-inline-hint"><strong>Next:</strong> ${escapeHtml(getNextTaskAction(item.task))}</p>
           <div class="auth-actions">
             <button
@@ -1906,7 +2035,7 @@ function renderDepartmentTaskQueue(taskItems: TaskListItem[]): void {
               type="button"
               data-open-assignment-task-id="${escapeHtml(item.task.id)}"
             >
-              Open Task Detail
+              Mở chi tiết nhiệm vụ
             </button>
             ${
               item.task.status === "pending"
@@ -1978,7 +2107,7 @@ function renderTaskList(tasks: TaskListItem[]): void {
   if (filteredTasks.length === 0) {
     taskList.innerHTML = `
       <div class="empty-state">
-        No department tasks match the current filter.
+        Không có nhiệm vụ nào phù hợp với bộ lọc hiện tại.
       </div>
     `;
     hideDepartmentTaskDetail();
@@ -1987,30 +2116,48 @@ function renderTaskList(tasks: TaskListItem[]): void {
 
   taskList.innerHTML = filteredTasks
     .map(
-      (task) => `
+      (task) => {
+        const linkedWI = currentWorkItems.find(
+          (wi) => wi.workItem.id === task.task.workItemId
+        );
+        const isOverdueTask = linkedWI?.workItem.deadline
+          ? new Date(linkedWI.workItem.deadline) < new Date() && task.task.status !== "completed"
+          : false;
+
+        return `
         <article class="task-card list-row ${selectedTaskId === task.task.id ? "is-selected" : ""}">
           <div class="task-card-row list-row-header">
             <h3 class="list-row-title">${escapeHtml(task.task.title)}</h3>
             <span class="status-badge status-${task.task.status}">
-              ${escapeHtml(task.task.status)}
+              ${escapeHtml(getTaskStatusLabel(task.task.status))}
             </span>
           </div>
           <div class="list-row-meta">
-            <span>${escapeHtml(task.task.ownerDepartmentId ?? "No department")}</span>
+            <span>${escapeHtml(task.task.ownerDepartmentId ?? "—")}</span>
             <span>${escapeHtml(getOwnerLabel(task.task.ownerId))}</span>
-            <span>${formatDate(task.task.createdAt)}</span>
+            ${
+              linkedWI?.workItem.deadline
+                ? `<span style="color:${isOverdueTask ? "#cf222e" : "#57606a"}">${isOverdueTask ? "⚠ QUÁ HẠN" : "Hạn"}: ${new Date(linkedWI.workItem.deadline).toLocaleDateString("vi-VN")}</span>`
+                : `<span>${formatDate(task.task.createdAt)}</span>`
+            }
           </div>
+          ${task.task.progressPercent != null && task.task.progressPercent > 0 ? `
+            <div style="background:#eaeef2;border-radius:4px;height:4px;margin:4px 0">
+              <div style="background:#0969da;height:4px;border-radius:4px;width:${Math.min(task.task.progressPercent, 100)}%"></div>
+            </div>
+          ` : ""}
           <div class="auth-actions">
             <button
               class="secondary-button task-detail-button"
               type="button"
               data-task-id="${escapeHtml(task.task.id)}"
             >
-              ${selectedTaskId === task.task.id ? "Close" : "Open Task"}
+              ${selectedTaskId === task.task.id ? "Đóng" : "Mở nhiệm vụ"}
             </button>
           </div>
         </article>
-      `
+      `;
+      }
     )
     .join("");
 
@@ -2053,7 +2200,7 @@ function renderLegacyTaskList(tasks: TaskListItem[]): void {
             type="button"
             data-task-id="${escapeHtml(task.task.id)}"
           >
-            ${selectedTaskId === task.task.id ? "Hide Details" : "View Details"}
+            ${selectedTaskId === task.task.id ? "Ẩn chi tiết" : "Xem chi tiết"}
           </button>
           ${selectedTaskId === task.task.id ? renderTaskDetail(task) : ""}
         </article>
@@ -2080,10 +2227,10 @@ function renderDepartmentTaskDetail(taskItem: TaskListItem): void {
 
 function hideDepartmentTaskDetail(): void {
   departmentTaskDetail.classList.add("hidden");
-  departmentTaskDetailTitle.textContent = "Task Detail";
+  departmentTaskDetailTitle.textContent = "Chi tiết nhiệm vụ";
   departmentTaskDetailMeta.textContent = "";
   departmentTaskDetailBody.innerHTML = "";
-  taskModalTitle.textContent = "Task Detail";
+  taskModalTitle.textContent = "Chi tiết nhiệm vụ";
   taskModalMeta.textContent = "";
   taskModalBody.innerHTML = "";
   taskModal.classList.add("hidden");
@@ -2213,6 +2360,16 @@ function bindTaskListInteractions(container: HTMLElement): void {
     });
 
   container
+    .querySelectorAll<HTMLButtonElement>("[data-trigger-response-file-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        const targetId = button.dataset.triggerResponseFileId ?? "";
+        const input = container.querySelector<HTMLInputElement>(`#${CSS.escape(targetId)}`);
+        input?.click();
+      });
+    });
+
+  container
     .querySelectorAll<HTMLInputElement>("[data-response-work-item-id]")
     .forEach((input) => {
       input.addEventListener("change", async () => {
@@ -2250,6 +2407,47 @@ function bindTaskListInteractions(container: HTMLElement): void {
         await handleCreateSubmissionReview(
           button.dataset.createSubmissionReviewId ?? null
         );
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-submit-report-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleSubmitTaskReport(button.dataset.submitReportTaskId ?? null);
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-quality-check-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handleQualityCheck(button.dataset.qualityCheckTaskId ?? null);
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-principal-approve-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", async () => {
+        await handlePrincipalApproveTask(button.dataset.principalApproveTaskId ?? null);
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-upload-evidence-task-id]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        const input = container.querySelector<HTMLInputElement>(`#evidence-file-${button.dataset.uploadEvidenceTaskId}`);
+        input?.click();
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLInputElement>("[data-evidence-file-task-id]")
+    .forEach((input) => {
+      input.addEventListener("change", async () => {
+        await handleUploadTaskEvidenceFile(input.dataset.evidenceFileTaskId ?? null, input);
       });
     });
 }
@@ -2599,57 +2797,61 @@ function renderTaskDetail(taskItem: TaskListItem): string {
       </div>
       <div class="task-detail-grid">
         <div>
-          <p class="detail-label">Title</p>
+          <p class="detail-label">Tiêu đề</p>
           <p class="detail-value">${escapeHtml(taskItem.task.title)}</p>
         </div>
         <div>
-          <p class="detail-label">Status</p>
+          <p class="detail-label">Trạng thái</p>
           <p class="detail-value">${escapeHtml(taskItem.task.status)}</p>
         </div>
         <div>
-          <p class="detail-label">Goal</p>
+          <p class="detail-label">Mục tiêu</p>
           <p class="detail-value">${escapeHtml(taskItem.task.goal)}</p>
         </div>
         <div>
-          <p class="detail-label">Audience</p>
+          <p class="detail-label">Đối tượng</p>
           <p class="detail-value">${escapeHtml(taskItem.task.audience)}</p>
         </div>
         <div>
-          <p class="detail-label">Notes</p>
-          <p class="detail-value">${escapeHtml(taskItem.task.notes ?? "No notes")}</p>
+          <p class="detail-label">Ghi chú</p>
+          <p class="detail-value">${escapeHtml(taskItem.task.notes ?? "Không có ghi chú")}</p>
         </div>
         <div>
-          <p class="detail-label">Created Time</p>
+          <p class="detail-label">Thời gian tạo</p>
           <p class="detail-value">${formatDate(taskItem.task.createdAt)}</p>
         </div>
         <div>
-          <p class="detail-label">Owner</p>
+          <p class="detail-label">Người thực hiện</p>
           <p class="detail-value owner-badge">${escapeHtml(getOwnerLabel(taskItem.task.ownerId))}</p>
         </div>
         <div>
-          <p class="detail-label">Department</p>
-          <p class="detail-value">${escapeHtml(taskItem.task.ownerDepartmentId ?? "none")}</p>
+          <p class="detail-label">Đơn vị</p>
+          <p class="detail-value">${escapeHtml(taskItem.task.ownerDepartmentId ?? "—")}</p>
         </div>
         <div>
-          <p class="detail-label">Assignment</p>
-          <p class="detail-value">${escapeHtml(taskItem.task.assignmentId ?? "none")}</p>
+          <p class="detail-label">Phiếu giao</p>
+          <p class="detail-value">${escapeHtml(taskItem.task.assignmentId ?? "—")}</p>
         </div>
         <div>
-          <p class="detail-label">Assignment State</p>
+          <p class="detail-label">Trạng thái phiếu giao</p>
           <p class="detail-value">${escapeHtml(getAssignmentStatusForTask(taskItem.task.assignmentId))}</p>
         </div>
         <div>
-          <p class="detail-label">Progress</p>
+          <p class="detail-label">Tiến độ</p>
           <p class="detail-value">${escapeHtml(String(taskItem.task.progressPercent ?? 0))}%</p>
         </div>
       </div>
 
       <div class="task-output">
-        <p class="detail-label">Linked Work Context</p>
+        <p class="detail-label">Ngữ cảnh hồ sơ liên kết</p>
         <div class="detail-value">
-          <p><strong>Work Item:</strong> ${escapeHtml(linkedWorkItem?.workItem.title ?? taskItem.task.workItemId ?? "none")}</p>
-          <p><strong>Work Item Status:</strong> ${escapeHtml(linkedWorkItem?.workItem.status ?? "not loaded")}</p>
-          <p><strong>Source Document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+          <p><strong>Work Item:</strong> ${escapeHtml(linkedWorkItem?.workItem.title ?? taskItem.task.workItemId ?? "—")}</p>
+          <p><strong>Work Item Status:</strong> ${escapeHtml(linkedWorkItem?.workItem.status ?? "Chưa tải")}</p>
+          ${linkedWorkItem?.workItem.intakeCode ? `<p><strong>Mã hồ sơ:</strong> ${escapeHtml(linkedWorkItem.workItem.intakeCode)}</p>` : ""}
+          ${linkedWorkItem?.workItem.sourceType ? `<p><strong>Nguồn vào:</strong> ${escapeHtml(linkedWorkItem.workItem.sourceType)}</p>` : ""}
+          ${linkedWorkItem?.workItem.outputType ? `<p><strong>Loại đầu ra:</strong> ${escapeHtml(linkedWorkItem.workItem.outputType)}</p>` : ""}
+          ${linkedWorkItem?.workItem.deadline ? `<p><strong style="color:#b35c00">⏰ Thời hạn:</strong> ${escapeHtml(new Date(linkedWorkItem.workItem.deadline).toLocaleString("vi-VN"))}</p>` : ""}
+          <p><strong>Source Document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "—")}</p>
           ${
             linkedWorkItem?.workItem.id
               ? `
@@ -2659,7 +2861,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                     type="button"
                     data-open-linked-work-item-id="${escapeHtml(linkedWorkItem.workItem.id)}"
                   >
-                    Open Work Item
+                    Mở hồ sơ
                   </button>
                   ${
                     linkedDocument?.document.id
@@ -2669,7 +2871,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                           type="button"
                           data-open-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
                         >
-                          Open Source Document
+                          Mở văn bản nguồn
                         </button>
                         ${
                           linkedDocument.document.hasFileContent
@@ -2680,7 +2882,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                                 data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
                                 data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
                               >
-                                Download Source Document
+                                Tải văn bản nguồn
                               </button>
                             `
                             : ""
@@ -2696,7 +2898,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
       </div>
 
       <div class="task-output">
-        <p class="detail-label">Attachments</p>
+        <p class="detail-label">Đính kèm</p>
         <div class="detail-value">
           ${
             linkedWorkItem && linkedWorkItem.files.length > 0
@@ -2750,7 +2952,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
       </div>
 
       <div class="task-output">
-        <p class="detail-label">Execution Update</p>
+        <p class="detail-label">Cập nhật thực hiện</p>
         <div class="detail-value">
           <p>Record progress, blockers, and internal completion milestones so the principal and agent can track execution history.</p>
           <div class="admin-item-grid">
@@ -2792,56 +2994,149 @@ function renderTaskDetail(taskItem: TaskListItem): string {
       </div>
 
       <div class="task-output">
-        <p class="detail-label">Submit Response</p>
+        <p class="detail-label">Giai đoạn 6 – Nộp báo cáo kết quả</p>
         <div class="detail-value">
+          ${
+            taskItem.task.reportSubmittedAt
+              ? `
+                <p class="status-badge status-completed" style="display:inline-block;margin-bottom:8px">
+                  ✅ Đã nộp báo cáo: ${formatDate(taskItem.task.reportSubmittedAt)}
+                </p>
+                <p>${escapeHtml(taskItem.task.reportNote ?? "")}</p>
+              `
+              : ""
+          }
+          ${
+            taskItem.task.qualityCheckedAt
+              ? `
+                <p class="status-badge ${taskItem.task.qualityCheckPassed ? "status-completed" : "status-failed"}" style="display:inline-block;margin-bottom:8px">
+                  ${taskItem.task.qualityCheckPassed ? "✅ Agent: Đạt" : "⚠️ Agent: Chưa đạt"}
+                </p>
+                <p class="detail-label">${escapeHtml(taskItem.task.qualityCheckNote ?? "")}</p>
+              `
+              : ""
+          }
+          ${
+            taskItem.task.principalApprovedAt
+              ? `
+                <p class="status-badge status-completed" style="display:inline-block;margin-bottom:8px">
+                  🎉 HT đã phê duyệt: ${formatDate(taskItem.task.principalApprovedAt)}
+                </p>
+                <p>${escapeHtml(taskItem.task.principalApprovalNote ?? "")}</p>
+              `
+              : ""
+          }
+
+          ${
+            taskItem.task.taskType === "school_workflow" &&
+            !taskItem.task.reportSubmittedAt &&
+            (taskItem.task.status === "running" || taskItem.task.status === "pending")
+              ? `
+                <div class="admin-item-grid" style="gap:8px">
+                  <div class="field">
+                    <label for="task-report-note-${escapeHtml(taskItem.task.id)}">Nội dung báo cáo kết quả</label>
+                    <textarea
+                      id="task-report-note-${escapeHtml(taskItem.task.id)}"
+                      rows="3"
+                      placeholder="Tóm tắt kết quả thực hiện, vấn đề phát sinh, kiến nghị..."
+                    ></textarea>
+                  </div>
+                  <div class="auth-actions">
+                    <button
+                      class="secondary-button task-action-button"
+                      type="button"
+                      data-upload-evidence-task-id="${escapeHtml(taskItem.task.id)}"
+                    >
+                      📎 Đính kèm minh chứng
+                    </button>
+                    <input
+                      id="evidence-file-${escapeHtml(taskItem.task.id)}"
+                      class="visually-hidden-file-input"
+                      type="file"
+                      multiple
+                      data-evidence-file-task-id="${escapeHtml(taskItem.task.id)}"
+                    />
+                    <button
+                      class="primary-button task-action-button"
+                      type="button"
+                      data-submit-report-task-id="${escapeHtml(taskItem.task.id)}"
+                    >
+                      📤 Nộp báo cáo kết quả
+                    </button>
+                  </div>
+                </div>
+              `
+              : ""
+          }
+
+          ${
+            isAdminLikeSession() &&
+            taskItem.task.taskType === "school_workflow" &&
+            taskItem.task.reportSubmittedAt &&
+            !taskItem.task.qualityCheckedAt
+              ? `
+                <div class="auth-actions" style="margin-top:8px">
+                  <button
+                    class="secondary-button task-action-button"
+                    type="button"
+                    data-quality-check-task-id="${escapeHtml(taskItem.task.id)}"
+                  >
+                    🔍 Agent kiểm tra đạt/chưa đạt
+                  </button>
+                </div>
+              `
+              : ""
+          }
+
+          ${
+            isAdminLikeSession() &&
+            taskItem.task.qualityCheckPassed === true &&
+            !taskItem.task.principalApprovedAt
+              ? `
+                <div class="admin-item-grid" style="gap:8px;margin-top:8px">
+                  <div class="field">
+                    <label for="principal-approval-note-${escapeHtml(taskItem.task.id)}">Ý kiến phê duyệt</label>
+                    <textarea
+                      id="principal-approval-note-${escapeHtml(taskItem.task.id)}"
+                      rows="2"
+                      placeholder="Ghi chú khi phê duyệt (không bắt buộc)"
+                    ></textarea>
+                  </div>
+                  <div class="auth-actions">
+                    <button
+                      class="primary-button task-action-button"
+                      type="button"
+                      data-principal-approve-task-id="${escapeHtml(taskItem.task.id)}"
+                    >
+                      ✅ HT Phê duyệt hoàn thành
+                    </button>
+                  </div>
+                </div>
+              `
+              : ""
+          }
+
           ${
             linkedWorkItem?.workItem.id
               ? `
-                <p>Upload the department response file, then submit it for principal review. The task is not completed until the principal approves it.</p>
-                <div class="auth-actions">
-                  <label class="secondary-button work-item-file-label" for="task-response-file-${escapeHtml(taskItem.task.id)}">
-                    Upload Response File
-                  </label>
-                  <input
-                    id="task-response-file-${escapeHtml(taskItem.task.id)}"
-                    class="hidden"
-                    type="file"
-                    multiple
-                    data-response-work-item-id="${escapeHtml(linkedWorkItem.workItem.id)}"
-                  />
+                <div class="auth-actions" style="margin-top:8px">
                   <button
                     class="secondary-button task-action-button"
                     type="button"
                     data-open-linked-work-item-id="${escapeHtml(linkedWorkItem.workItem.id)}"
                     data-open-work-item-tab="files"
                   >
-                    Open Work Item Files
+                    Xem hồ sơ đính kèm
                   </button>
-                  ${
-                    taskItem.task.status === "running" ||
-                    taskItem.task.status === "pending"
-                      ? `
-                        <button
-                          class="primary-button task-action-button"
-                          type="button"
-                          data-submit-task-response-id="${escapeHtml(taskItem.task.id)}"
-                        >
-                          Mark Response Submitted
-                        </button>
-                      `
-                      : ""
-                  }
                 </div>
               `
-              : `
-                <p>No linked work item is available yet, so there is nowhere to submit a response file.</p>
-              `
+              : ""
           }
         </div>
       </div>
 
       <div class="task-output">
-        <p class="detail-label">Execution Timeline</p>
+        <p class="detail-label">Tiến trình thực hiện</p>
         <div class="detail-value">
           ${
             currentSelectedTaskUpdates.length > 0
@@ -2869,7 +3164,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
         isAdminLikeSession() && taskItem.task.taskType === "school_workflow"
           ? `
             <div class="task-output">
-              <p class="detail-label">Submission Review</p>
+              <p class="detail-label">Xét duyệt nộp bài</p>
               <div class="detail-value">
                 <p>Classify the submitted response so it returns to the correct step instead of restarting the whole workflow.</p>
                 <div class="admin-item-grid">
@@ -2913,7 +3208,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
         isAdminLikeSession() && taskItem.task.taskType === "school_workflow"
           ? `
             <div class="task-output">
-              <p class="detail-label">Submission Review Timeline</p>
+              <p class="detail-label">Lịch sử xét duyệt</p>
               <div class="detail-value">
                 ${
                   currentSelectedTaskReviews.length > 0
@@ -2927,7 +3222,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                               </div>
                               <p><strong>Reviewed:</strong> ${escapeHtml(formatDate(review.createdAt))}</p>
                               <p><strong>By:</strong> ${escapeHtml(review.reviewedByUserId ?? "system")}</p>
-                              <p><strong>Reason code:</strong> ${escapeHtml(review.reasonCode ?? "none")}</p>
+                              <p><strong>Reason code:</strong> ${escapeHtml(review.reasonCode ?? "—")}</p>
                               <p>${escapeHtml(review.reasonText ?? "No explanation provided.")}</p>
                             </div>
                           `
@@ -2953,7 +3248,7 @@ function renderTaskDetail(taskItem: TaskListItem): string {
       <div class="task-output">
         <p class="detail-label">Result Content</p>
         <pre class="task-output-text">${escapeHtml(
-          taskItem.result?.outputText ?? "No result saved yet."
+          taskItem.result?.outputText ?? "Chưa có kết quả."
         )}</pre>
       </div>
     </div>
@@ -2966,11 +3261,11 @@ function buildFullOutput(taskItem: TaskListItem): string {
     `Status: ${taskItem.task.status}`,
     `Goal: ${taskItem.task.goal}`,
     `Audience: ${taskItem.task.audience}`,
-    `Notes: ${taskItem.task.notes ?? "No notes"}`,
+    `Ghi chú: ${taskItem.task.notes ?? "—"}`,
     `Created Time: ${formatDate(taskItem.task.createdAt)}`,
     "",
     "Result Content:",
-    taskItem.result?.outputText ?? "No result saved yet."
+    taskItem.result?.outputText ?? "Chưa có kết quả."
   ].join("\n");
 }
 
@@ -3025,7 +3320,7 @@ async function handleCopyAction(button: HTMLButtonElement): Promise<void> {
       ? buildFullOutput(taskItem)
       : copyMode === "draft"
         ? extractDraftContent(taskItem.result?.outputText)
-        : taskItem.result?.outputText ?? "No result saved yet.";
+        : taskItem.result?.outputText ?? "Chưa có kết quả.";
 
   try {
     await navigator.clipboard.writeText(textToCopy);
@@ -3045,7 +3340,7 @@ async function handleCopyAction(button: HTMLButtonElement): Promise<void> {
 
 function extractDraftContent(outputText?: string): string {
   if (!outputText) {
-    return "No result saved yet.";
+    return "Chưa có kết quả.";
   }
 
   const match = outputText.match(
@@ -3188,6 +3483,37 @@ async function handleDeleteWorkItem(workItemId: string | null): Promise<void> {
       error instanceof Error
         ? error.message
         : "Something went wrong while deleting the work item.",
+      "error"
+    );
+  }
+}
+
+async function handleArchiveWorkItem(workItemId: string | null): Promise<void> {
+  if (!workItemId) return;
+
+  if (!window.confirm("Lưu trữ hồ sơ này? Hồ sơ sẽ chuyển sang trạng thái lưu trữ và chỉ được tra cứu.")) {
+    return;
+  }
+
+  setStatus("Đang lưu trữ...", "loading");
+
+  try {
+    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/archive`, {
+      method: "POST",
+      headers: buildApiHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({})
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Không thể lưu trữ hồ sơ"));
+    }
+
+    await loadWorkItems();
+    await selectWorkItemById(workItemId);
+    setStatus("✅ Hồ sơ đã được lưu trữ thành công (Giai đoạn 9).", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi lưu trữ hồ sơ.",
       "error"
     );
   }
@@ -3511,8 +3837,8 @@ function renderSessionUser(): void {
 
   sessionUser.textContent =
     currentSessionUserId && currentSessionUserId.length > 0
-      ? `Session user: ${currentSessionUserId}${roleLabel}`
-      : "Session user: not logged in";
+      ? `Đăng nhập: ${currentSessionUserId}${roleLabel}`
+      : "Chưa đăng nhập";
   renderIdentitySource();
   renderAdminPanel();
   renderAccountSummary();
@@ -3526,18 +3852,17 @@ function renderIdentitySource(): void {
   if (currentSessionUserId && currentSessionUserId.length > 0) {
     identitySource.textContent =
       currentMockUserId.length > 0
-        ? `Active identity: ${currentSessionUserId} (session). Dev fallback ${currentMockUserId} is ignored while the session is active.`
-        : `Active identity: ${currentSessionUserId} (session).`;
+        ? `Phiên: ${currentSessionUserId}. Dev fallback ${currentMockUserId} bị bỏ qua.`
+        : `Phiên: ${currentSessionUserId}.`;
     return;
   }
 
   if (currentMockUserId.length > 0) {
-    identitySource.textContent =
-      `Active identity: ${currentMockUserId} (dev fallback header). No active session.`;
+    identitySource.textContent = `Dev fallback: ${currentMockUserId}. Chưa có phiên đăng nhập.`;
     return;
   }
 
-  identitySource.textContent = "Active identity: none. No active session.";
+  identitySource.textContent = "Chưa đăng nhập. Vui lòng đăng nhập để tiếp tục.";
 }
 
 function setAuthButtonsDisabled(isDisabled: boolean): void {
@@ -3623,20 +3948,20 @@ function renderAccountSummary(): void {
   accountSummary.innerHTML = `
     <div class="admin-item-grid">
       <div>
-        <p class="detail-label">Session</p>
-        <p class="detail-value">${escapeHtml(currentSessionUserId ?? "Not logged in")}</p>
+        <p class="detail-label">Phiên đăng nhập</p>
+        <p class="detail-value">${escapeHtml(currentSessionUserId ?? "Chưa đăng nhập")}</p>
       </div>
       <div>
-        <p class="detail-label">Role</p>
-        <p class="detail-value">${escapeHtml(currentSessionUser?.role ?? "guest")}</p>
+        <p class="detail-label">Vai trò</p>
+        <p class="detail-value">${escapeHtml(currentSessionUser?.role ?? "khách")}</p>
       </div>
       <div>
-        <p class="detail-label">Department</p>
-        <p class="detail-value">${escapeHtml(currentSessionUser?.departmentName ?? currentSessionUser?.departmentId ?? "none")}</p>
+        <p class="detail-label">Đơn vị</p>
+        <p class="detail-value">${escapeHtml(currentSessionUser?.departmentName ?? currentSessionUser?.departmentId ?? "—")}</p>
       </div>
       <div>
-        <p class="detail-label">Position</p>
-        <p class="detail-value">${escapeHtml(currentSessionUser?.position ?? "not set")}</p>
+        <p class="detail-label">Chức vụ</p>
+        <p class="detail-value">${escapeHtml(currentSessionUser?.position ?? "—")}</p>
       </div>
     </div>
   `;
@@ -4119,7 +4444,7 @@ function renderDocumentList(items: DocumentListItem[]): void {
               type="button"
               data-document-id="${escapeHtml(item.document.id)}"
             >
-              ${selectedDocumentId === item.document.id ? "Close" : "Open"}
+              ${selectedDocumentId === item.document.id ? "Đóng" : "Mở"}
             </button>
           </div>
         </article>
@@ -4223,16 +4548,16 @@ function renderDocumentDetail(item: DocumentListItem): void {
   documentDetailTitle.textContent = item.document.filename;
   documentDetailMeta.textContent = [
     `OCR: ${item.document.ocrStatus}`,
-    `Uploaded: ${formatDate(item.document.createdAt)}`,
-    `Work Item: ${item.document.createdWorkItemId ?? "not created"}`
+    `Tải lên: ${formatDate(item.document.createdAt)}`,
+    `Hồ sơ: ${item.document.createdWorkItemId ?? "Chưa tạo"}`
   ].join(" | ");
   documentModalTitle.textContent = item.document.filename;
   documentModalMeta.textContent = documentDetailMeta.textContent;
   documentModalBody.innerHTML = `
     <div class="detail-tabs">
-      <button class="tab-button is-active" type="button" data-document-tab="summary">Summary</button>
-      <button class="tab-button" type="button" data-document-tab="metadata">Metadata</button>
-      <button class="tab-button" type="button" data-document-tab="text">Extracted Text</button>
+      <button class="tab-button is-active" type="button" data-document-tab="summary">Tóm tắt AI</button>
+      <button class="tab-button" type="button" data-document-tab="metadata">Thông tin</button>
+      <button class="tab-button" type="button" data-document-tab="text">Văn bản trích xuất</button>
     </div>
     <div class="task-actions">
       <button
@@ -4240,40 +4565,40 @@ function renderDocumentDetail(item: DocumentListItem): void {
         class="secondary-button"
         type="button"
         ${isAnalyzing ? "disabled" : ""}
-      >${isAnalyzing ? "Analyzing..." : "Analyze Intake"}</button>
+      >${isAnalyzing ? "Đang phân tích..." : "Phân tích văn bản"}</button>
       <button id="create-document-work-item-button" class="secondary-button" type="button">
-        Create Work Item
+        Tạo hồ sơ công việc
       </button>
     </div>
     <section class="tab-panel" data-document-panel="summary">
       <div class="task-output">
-        <p class="detail-label">Extracted Summary</p>
+        <p class="detail-label">Tóm tắt AI / Văn bản trích xuất</p>
         <pre class="task-output-text">${escapeHtml(
           item.latestAnalysis?.rawOutput ??
             item.document.extractedText?.slice(0, 2400) ??
-            "No analysis or extracted text is available yet."
+            "Chưa có phân tích AI hoặc văn bản trích xuất nào."
         )}</pre>
       </div>
     </section>
     <section class="tab-panel hidden" data-document-panel="metadata">
       <div class="task-detail-grid">
         <div>
-          <p class="detail-label">Uploader</p>
+          <p class="detail-label">Người tải lên</p>
           <p class="detail-value">${escapeHtml(item.document.uploadedByUserId)}</p>
         </div>
         <div>
-          <p class="detail-label">Content Type</p>
-          <p class="detail-value">${escapeHtml(item.document.contentType ?? "unknown")}</p>
+          <p class="detail-label">Định dạng</p>
+          <p class="detail-value">${escapeHtml(item.document.contentType ?? "—")}</p>
         </div>
         <div>
-          <p class="detail-label">Size</p>
+          <p class="detail-label">Kích thước</p>
           <p class="detail-value">${escapeHtml(
-            item.document.sizeBytes !== undefined ? `${item.document.sizeBytes} bytes` : "unknown"
+            item.document.sizeBytes !== undefined ? `${item.document.sizeBytes} bytes` : "—"
           )}</p>
         </div>
         <div>
-          <p class="detail-label">Linked Work Item</p>
-          <p class="detail-value">${escapeHtml(item.document.createdWorkItemId ?? "not created")}</p>
+          <p class="detail-label">Hồ sơ liên kết</p>
+          <p class="detail-value">${escapeHtml(item.document.createdWorkItemId ?? "Chưa tạo")}</p>
         </div>
       </div>
       <div class="task-output">
@@ -4285,9 +4610,9 @@ function renderDocumentDetail(item: DocumentListItem): void {
     </section>
     <section class="tab-panel hidden" data-document-panel="text">
       <div class="task-output">
-        <p class="detail-label">Extracted Text</p>
+        <p class="detail-label">Văn bản trích xuất đầy đủ</p>
         <pre class="task-output-text">${escapeHtml(
-          item.document.extractedText ?? "No extracted text was stored for this document."
+          item.document.extractedText ?? "Chưa có văn bản trích xuất nào được lưu trữ."
         )}</pre>
       </div>
     </section>
@@ -4319,10 +4644,10 @@ function renderDocumentDetail(item: DocumentListItem): void {
 
 function hideDocumentDetail(): void {
   documentDetail.classList.add("hidden");
-  documentDetailTitle.textContent = "Document Detail";
+  documentDetailTitle.textContent = "Chi tiết văn bản";
   documentDetailMeta.textContent = "";
   documentDetailBody.innerHTML = "";
-  documentModalTitle.textContent = "Document Detail";
+  documentModalTitle.textContent = "Chi tiết văn bản";
   documentModalMeta.textContent = "";
   documentModalBody.innerHTML = "";
   documentModal.classList.add("hidden");
@@ -4650,8 +4975,30 @@ async function loadWorkItems(): Promise<void> {
   }
 }
 
+const ACTIVE_WORK_ITEM_STATUSES = new Set([
+  "draft",
+  "waiting_review",
+  "waiting_assignment",
+  "assigned",
+  "on_hold",
+  "in_review",
+  "needs_supplement",
+  "needs_rework",
+  "late_explanation_required",
+  "waiting_principal_approval"
+]);
+
 function renderWorkItemList(items: WorkItemListItem[]): void {
   const filteredItems = items.filter((item) => {
+    // Status filter
+    if (currentWorkItemStatusFilter === "active") {
+      if (!ACTIVE_WORK_ITEM_STATUSES.has(item.workItem.status)) return false;
+    } else if (currentWorkItemStatusFilter === "completed") {
+      if (item.workItem.status !== "completed") return false;
+    } else if (currentWorkItemStatusFilter === "archived") {
+      if (item.workItem.status !== "archived") return false;
+    }
+    // Text search
     if (currentWorkItemSearch.length === 0) {
       return true;
     }
@@ -4660,7 +5007,8 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
       item.workItem.title,
       item.workItem.description,
       item.workItem.createdByUserId,
-      item.workItem.departmentId ?? ""
+      item.workItem.departmentId ?? "",
+      item.workItem.intakeCode ?? ""
     ]
       .join(" ")
       .toLowerCase();
@@ -4671,7 +5019,7 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
   if (filteredItems.length === 0) {
     workItemList.innerHTML = `
       <div class="empty-state">
-        No work items match the current search.
+        Không có hồ sơ nào phù hợp.
       </div>
     `;
     return;
@@ -4684,18 +5032,26 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
           (currentItem) => currentItem.workItemId === item.workItem.id
         );
 
+        const isOverdue = item.workItem.deadline
+          ? new Date(item.workItem.deadline) < new Date() && ACTIVE_WORK_ITEM_STATUSES.has(item.workItem.status)
+          : false;
+
         return `
         <article class="task-card list-row ${selectedWorkItemId === item.workItem.id ? "is-selected" : ""}">
           <div class="task-card-row list-row-header">
             <h3 class="list-row-title">${escapeHtml(item.workItem.title)}</h3>
             <span class="status-badge status-${escapeHtml(item.workItem.status)}">
-              ${escapeHtml(item.workItem.status)}
+              ${escapeHtml(getWorkItemStatusLabel(item.workItem.status))}
             </span>
           </div>
           <div class="list-row-meta">
-            <span>${escapeHtml(item.workItem.departmentId ?? "No department")}</span>
-            <span>By ${escapeHtml(item.workItem.createdByUserId)}</span>
-            <span>${formatDate(item.workItem.updatedAt)}</span>
+            <span>${escapeHtml(item.workItem.intakeCode ?? item.workItem.departmentId ?? "—")}</span>
+            <span>${escapeHtml(item.workItem.createdByUserId)}</span>
+            ${
+              item.workItem.deadline
+                ? `<span style="color:${isOverdue ? "#cf222e" : "#57606a"}">${isOverdue ? "⚠ QUÁ HẠN" : "Hạn"}: ${new Date(item.workItem.deadline).toLocaleDateString("vi-VN")}</span>`
+                : `<span>${formatDate(item.workItem.updatedAt)}</span>`
+            }
           </div>
           <p class="workflow-inline-hint">${escapeHtml(getNextWorkItemAction(item.workItem.status))}</p>
           <div class="auth-actions">
@@ -4704,7 +5060,7 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
               type="button"
               data-work-item-id="${escapeHtml(item.workItem.id)}"
             >
-              ${selectedWorkItemId === item.workItem.id ? "Close" : "Open Record"}
+              ${selectedWorkItemId === item.workItem.id ? "Đóng" : "Mở hồ sơ"}
             </button>
             ${
               assignment
@@ -4714,7 +5070,7 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
                     type="button"
                     data-open-work-item-task-id="${escapeHtml(assignment.taskId)}"
                   >
-                    Linked Task
+                    Mở nhiệm vụ
                   </button>
                 `
                 : ""
@@ -4830,9 +5186,9 @@ function renderAssignmentsList(assignments: Assignment[]): void {
           <p><strong>Main Department:</strong> ${escapeHtml(assignment.mainDepartmentId)}</p>
           <p><strong>Status:</strong> ${escapeHtml(assignment.status)}</p>
           <p><strong>Task:</strong> ${escapeHtml(assignment.taskId)}</p>
-          <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "none")}</p>
-          <p><strong>Output:</strong> ${escapeHtml(assignment.outputRequirement ?? "none")}</p>
-          <p><strong>Adjustment Reason:</strong> ${escapeHtml(assignment.adjustmentReason ?? "none")}</p>
+          <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "—")}</p>
+          <p><strong>Output:</strong> ${escapeHtml(assignment.outputRequirement ?? "—")}</p>
+          <p><strong>Adjustment Reason:</strong> ${escapeHtml(assignment.adjustmentReason ?? "—")}</p>
           <p><strong>Created:</strong> ${formatDate(assignment.createdAt)}</p>
           <div class="auth-actions">
             <button
@@ -4840,7 +5196,7 @@ function renderAssignmentsList(assignments: Assignment[]): void {
               type="button"
               data-open-assignment-work-item-id="${escapeHtml(assignment.workItemId)}"
             >
-              Open Work Item
+              Mở hồ sơ
             </button>
             <button
               class="secondary-button"
@@ -4931,7 +5287,7 @@ function renderAssignmentWorkspace(): void {
   if (!isAdminLikeSession()) {
     assignmentWorkspace.innerHTML = `
       <div class="empty-state">
-        Assignment workspace is only available to principal or admin sessions.
+        Không gian giao việc chỉ dành cho Hiệu trưởng hoặc quản trị viên.
       </div>
     `;
     return;
@@ -4940,7 +5296,7 @@ function renderAssignmentWorkspace(): void {
   if (!selectedWorkItemId) {
     assignmentWorkspace.innerHTML = `
       <div class="empty-state">
-        Select a work item from the waiting queue to review assignment details and prepare handoff.
+        Chọn một hồ sơ từ hàng chờ để xem chi tiết và chuẩn bị phiếu giao việc.
       </div>
     `;
     return;
@@ -4954,7 +5310,7 @@ function renderAssignmentWorkspace(): void {
   if (!selectedItem) {
     assignmentWorkspace.innerHTML = `
       <div class="empty-state">
-        The selected work item is no longer visible.
+        Hồ sơ đã chọn không còn hiển thị nữa.
       </div>
     `;
     return;
@@ -4971,11 +5327,11 @@ function renderAssignmentWorkspace(): void {
       <p><strong>Description:</strong> ${escapeHtml(selectedItem.workItem.description)}</p>
       <p><strong>Current assignment:</strong> ${escapeHtml(currentAssignment ? currentAssignment.mainDepartmentId : "none")}</p>
       <p><strong>Priority:</strong> ${escapeHtml(currentAssignment?.priority ?? "not assigned")}</p>
-      <p><strong>Deadline:</strong> ${escapeHtml(currentAssignment?.deadline ?? "none")}</p>
+      <p><strong>Deadline:</strong> ${escapeHtml(currentAssignment?.deadline ?? "—")}</p>
       <p><strong>Assignment form:</strong> Use the Work Items detail panel to submit or revise the assignment for this record.</p>
       <div class="auth-actions">
         <button class="secondary-button" type="button" data-open-assignment-workspace-item="${escapeHtml(selectedItem.workItem.id)}">
-          Open in Work Items
+          Mở trong Hồ sơ
         </button>
       </div>
     </article>
@@ -5090,7 +5446,7 @@ function renderPrincipalReviewWorkspace(): void {
         </span>
       </div>
       <p><strong>Description:</strong> ${escapeHtml(selectedItem.workItem.description)}</p>
-      <p><strong>Source document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+      <p><strong>Source document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "—")}</p>
       <p><strong>Latest AI summary:</strong> ${escapeHtml(selectedItem.latestAnalysis?.summary ?? "No AI summary saved yet")}</p>
       <div class="admin-item-grid">
         <div class="field">
@@ -5134,15 +5490,38 @@ function renderPrincipalReviewWorkspace(): void {
             ${renderAssignmentPriorityOptions(selectedItem.workItem.routingPriority ?? "normal")}
           </select>
         </div>
+        <div class="form-row-2col">
+          <div class="field">
+            <label for="principal-output-type">Loại đầu ra (Output type)</label>
+            <select id="principal-output-type">
+              <option value="" ${!selectedItem.workItem.outputType ? "selected" : ""}>-- Chọn loại đầu ra --</option>
+              <option value="report" ${selectedItem.workItem.outputType === "report" ? "selected" : ""}>Báo cáo (Report)</option>
+              <option value="plan_document" ${selectedItem.workItem.outputType === "plan_document" ? "selected" : ""}>Văn bản kế hoạch (Plan document)</option>
+              <option value="minutes" ${selectedItem.workItem.outputType === "minutes" ? "selected" : ""}>Biên bản (Minutes)</option>
+              <option value="list" ${selectedItem.workItem.outputType === "list" ? "selected" : ""}>Danh sách (List)</option>
+              <option value="proposal" ${selectedItem.workItem.outputType === "proposal" ? "selected" : ""}>Đề xuất (Proposal)</option>
+              <option value="evidence_files" ${selectedItem.workItem.outputType === "evidence_files" ? "selected" : ""}>Hồ sơ minh chứng (Evidence files)</option>
+              <option value="other" ${selectedItem.workItem.outputType === "other" ? "selected" : ""}>Khác (Other)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="principal-deadline">Thời hạn (Deadline)</label>
+            <input
+              id="principal-deadline"
+              type="datetime-local"
+              value="${selectedItem.workItem.deadline ? new Date(selectedItem.workItem.deadline).toISOString().slice(0, 16) : ""}"
+            />
+          </div>
+        </div>
         <div class="field">
-          <label for="principal-output-requirement">Output requirement</label>
-          <textarea id="principal-output-requirement" rows="2" placeholder="Required report or deliverable">${escapeHtml(
+          <label for="principal-output-requirement">Yêu cầu đầu ra (Output requirement)</label>
+          <textarea id="principal-output-requirement" rows="2" placeholder="Mô tả chi tiết yêu cầu kết quả">${escapeHtml(
             selectedItem.workItem.outputRequirement ?? ""
           )}</textarea>
         </div>
         <div class="field">
-          <label for="principal-note">Principal note</label>
-          <textarea id="principal-note" rows="2" placeholder="Routing instruction or intake note">${escapeHtml(
+          <label for="principal-note">Ghi chú chỉ đạo (Principal note)</label>
+          <textarea id="principal-note" rows="2" placeholder="Chỉ đạo điều phối hoặc ghi chú tiếp nhận">${escapeHtml(
             selectedItem.workItem.principalNote ?? ""
           )}</textarea>
         </div>
@@ -5152,7 +5531,7 @@ function renderPrincipalReviewWorkspace(): void {
           Save Routing Decision
         </button>
         <button id="open-principal-review-work-item-button" class="secondary-button" type="button">
-          Open Work Item
+          Mở hồ sơ
         </button>
         ${
           selectedItem.workItem.status === "waiting_assignment"
@@ -5165,7 +5544,7 @@ function renderPrincipalReviewWorkspace(): void {
         }
       </div>
       <p class="workflow-inline-hint workflow-inline-hint-strong">
-        Saving here only confirms the principal routing choice. The department handoff still happens in Step 3 below.
+        Lưu ở đây chỉ xác nhận quyết định phân luồng của HT. Việc giao cho đơn vị vẫn cần thực hiện ở bước tiếp theo.
       </p>
     </article>
     ${buildPrincipalWorkflowHtml(selectedItem)}
@@ -5216,18 +5595,18 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
     "not chosen";
   const handoffAttentionTitle = assignmentFocusItem
     ? assignmentFocusRecord
-      ? "Assignment already dispatched"
-      : "Ready to dispatch this work item"
+      ? "Đã giao việc cho đơn vị"
+      : "Sẵn sàng giao việc cho hồ sơ này"
     : waitingAssignmentItems.length > 0
-      ? "Choose a record and dispatch its handoff"
-      : "No records are waiting for assignment";
+      ? "Chọn hồ sơ và tạo phiếu giao việc"
+      : "Không có hồ sơ nào chờ giao việc";
   const handoffAttentionCopy = assignmentFocusItem
     ? assignmentFocusRecord
-      ? "The routing decision is saved. Open the department task to monitor acceptance or execution."
-      : `Routing is complete. Next step: create the handoff for ${assignmentFocusLeadDepartment}.`
+      ? "Quyết định phân luồng đã được lưu. Mở nhiệm vụ đơn vị để theo dõi tiếp nhận và thực hiện."
+      : `Phân luồng hoàn tất. Bước tiếp theo: tạo phiếu giao cho ${assignmentFocusLeadDepartment}.`
     : waitingAssignmentItems.length > 0
-      ? "Select a routed record from the left queue, review the summary, then dispatch the department handoff."
-      : "Once principal routing is saved with “Prepare for assignment”, the record will appear here.";
+      ? "Chọn hồ sơ đã phân luồng từ hàng chờ bên trái, xem tóm tắt rồi giao việc cho đơn vị."
+      : "Sau khi HT phân luồng với quyết định 'Chuẩn bị giao việc', hồ sơ sẽ xuất hiện ở đây.";
 
   const waitingAssignmentHtml =
     waitingAssignmentItems.length > 0
@@ -5314,7 +5693,7 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
       `
     : `
         <div class="empty-state">
-          Select a routed record to prepare or review its assignment handoff.
+          Chọn hồ sơ đã phân luồng để chuẩn bị hoặc xem lại phiếu giao việc.
         </div>
       `;
 
@@ -5330,7 +5709,7 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
                   <span class="status-badge status-running">${escapeHtml(assignment.status)}</span>
                 </div>
                 <p><strong>Main Department:</strong> ${escapeHtml(assignment.mainDepartmentId)}</p>
-                <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "none")}</p>
+                <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "—")}</p>
                 <p><strong>Adjustment Reason:</strong> ${escapeHtml(
                   assignment.adjustmentReason ?? "none"
                 )}</p>
@@ -5356,7 +5735,7 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
           .join("")
       : `
           <div class="empty-state">
-            No assignment handoffs have been created yet.
+            Chưa có phiếu giao việc nào được tạo.
           </div>
         `;
 
@@ -5364,16 +5743,16 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
     <section id="workflow-assignment-panel" class="workflow-section">
       <div class="panel-header">
         <div>
-          <p class="eyebrow">Step 3</p>
-          <h3>Assignment Handoff</h3>
+          <p class="eyebrow">Giai đoạn 3</p>
+          <h3>Giao việc cho đơn vị</h3>
         </div>
       </div>
       <p class="intro workflow-note">
-        After principal routing is saved, dispatch the department handoff here and monitor whether the unit accepts it.
+        Sau khi HT lưu quyết định phân luồng, giao việc cho đơn vị tại đây và theo dõi việc tiếp nhận.
       </p>
       <article class="workflow-attention-card">
         <div>
-          <p class="eyebrow">Next Step</p>
+          <p class="eyebrow">Bước tiếp theo</p>
           <h4>${escapeHtml(handoffAttentionTitle)}</h4>
           <p>${escapeHtml(handoffAttentionCopy)}</p>
         </div>
@@ -5395,20 +5774,20 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
       <div class="workflow-columns">
         <div class="workflow-column">
           <div class="workflow-subhead">
-            <p class="detail-label">Waiting Assignment</p>
+            <p class="detail-label">Chờ giao việc</p>
             <span class="workflow-count-chip">${waitingAssignmentItems.length}</span>
           </div>
           <div class="work-item-queue">${waitingAssignmentHtml}</div>
         </div>
         <div class="workflow-column">
-          <p class="detail-label">Current Assignment Focus</p>
+          <p class="detail-label">Hồ sơ đang được chọn giao</p>
           <div class="admin-list">${assignmentFocusHtml}</div>
         </div>
       </div>
       <div class="workflow-ledger">
         <div class="workflow-subhead">
-          <p class="detail-label">Recent Assignment Ledger</p>
-          <span class="workflow-mini-note">Latest handoffs and acceptance state</span>
+          <p class="detail-label">Phiếu giao gần đây</p>
+          <span class="workflow-mini-note">Phiếu giao mới nhất và trạng thái tiếp nhận</span>
         </div>
         <div class="admin-list">${assignmentLedgerHtml}</div>
       </div>
@@ -5469,28 +5848,31 @@ function renderOverview(): void {
     (item) => item.task.status === "running"
   ).length;
   const waitingApprovalCount = currentWorkItems.filter(
-    (item) => item.workItem.status === "in_review"
+    (item) => item.workItem.status === "waiting_principal_approval"
   ).length;
-  const overdueCount = currentAssignments.filter((assignment) => {
-    if (!assignment.deadline) {
-      return false;
-    }
-
-    return new Date(assignment.deadline).getTime() < now;
+  const overdueWorkItems = currentWorkItems.filter((item) => {
+    if (!item.workItem.deadline) return false;
+    if (!ACTIVE_WORK_ITEM_STATUSES.has(item.workItem.status)) return false;
+    return new Date(item.workItem.deadline).getTime() < now;
   }).length;
+  const completedCount = currentWorkItems.filter(
+    (item) => item.workItem.status === "completed" || item.workItem.status === "archived"
+  ).length;
 
   overviewCards.innerHTML = [
-    { label: "New", value: String(newCount) },
-    { label: "Waiting Review", value: String(waitingCount) },
-    { label: "Assigned", value: String(assignedCount) },
-    { label: "In Progress", value: String(inProgressCount) },
-    { label: "Overdue", value: String(overdueCount) },
-    { label: "Waiting Approval", value: String(waitingApprovalCount) }
+    { label: "G1 – Chờ tiếp nhận", value: String(documentCount), alert: false },
+    { label: "G2 – Chờ HT xem xét", value: String(waitingCount), alert: waitingCount > 0 },
+    { label: "G3 – Chờ giao việc", value: String(assignedCount), alert: false },
+    { label: "G4 – Đang thực hiện", value: String(inProgressCount), alert: false },
+    { label: "G5 – Quá hạn", value: String(overdueWorkItems), alert: overdueWorkItems > 0 },
+    { label: "G8 – Chờ HT duyệt", value: String(waitingApprovalCount), alert: waitingApprovalCount > 0 },
+    { label: "Đang xử lý tổng", value: String(queueCount), alert: false },
+    { label: "Hoàn thành / Lưu trữ", value: String(completedCount), alert: false }
   ]
     .map(
       (card) => `
-        <article class="metric-card">
-          <p class="detail-label">${escapeHtml(card.label)}</p>
+        <article class="${card.alert ? "metric-card-alert" : "metric-card"}">
+          <p class="metric-label">${escapeHtml(card.label)}</p>
           <strong class="metric-value">${escapeHtml(card.value)}</strong>
         </article>
       `
@@ -5519,6 +5901,13 @@ function renderOverview(): void {
     return true;
   });
 
+  // Overdue work items from work item deadline field
+  const overdueWorkItemList = currentWorkItems.filter((item) => {
+    if (!item.workItem.deadline) return false;
+    if (!ACTIVE_WORK_ITEM_STATUSES.has(item.workItem.status)) return false;
+    return new Date(item.workItem.deadline).getTime() < now;
+  });
+
   const needsAttentionItems: Array<{
     label: string;
     view: typeof currentView;
@@ -5528,36 +5917,41 @@ function renderOverview(): void {
     ...(documentCount > 0
       ? [
           {
-            label: `${documentCount} intake documents are currently visible.`,
+            label: `📥 ${documentCount} văn bản chờ tiếp nhận và tạo hồ sơ.`,
             view: "documents" as const
-          }
-        ]
-      : []),
-    ...(overdueCount > 0
-      ? [
-          {
-            label: `${overdueCount} assignments are overdue.`,
-            view: "approvals" as const
           }
         ]
       : []),
     ...(waitingCount > 0
       ? [
           {
-            label: `${waitingCount} work items are still waiting review.`,
+            label: `⚖️ ${waitingCount} hồ sơ chờ HT xem xét và phân luồng.`,
             view: "approvals" as const
+          }
+        ]
+      : []),
+    ...overdueWorkItemList.slice(0, 3).map((item) => ({
+      label: `⚠ QUÁ HẠN: ${item.workItem.title} – hạn ${new Date(item.workItem.deadline!).toLocaleDateString("vi-VN")}`,
+      view: "work-items" as const,
+      workItemId: item.workItem.id
+    })),
+    ...(waitingApprovalCount > 0
+      ? [
+          {
+            label: `✅ ${waitingApprovalCount} hồ sơ chờ HT phê duyệt kết quả.`,
+            view: "department-tasks" as const
           }
         ]
       : []),
     ...(queueCount > 0
       ? [
           {
-            label: `${queueCount} department tasks are visible in the queue.`,
+            label: `🏃 ${queueCount} nhiệm vụ đang được thực hiện tại các đơn vị.`,
             view: "department-tasks" as const
           }
         ]
       : []),
-    ...actionableNotifications.slice(0, 4).map((notification) => {
+    ...actionableNotifications.slice(0, 3).map((notification) => {
       const linkedAssignment = notification.assignmentId
         ? currentAssignments.find((assignment) => assignment.id === notification.assignmentId) ?? null
         : null;
@@ -5595,7 +5989,7 @@ function renderOverview(): void {
           .join("")
       : `
           <div class="empty-state">
-            No urgent issues are detected from the current visible data.
+            Không có vấn đề cấp bách nào được phát hiện.
           </div>
         `;
 
@@ -5611,39 +6005,52 @@ function renderOverview(): void {
       });
     });
 
-  const recentActivity = [
-    ...currentNotifications
-      .slice(0, 2)
-      .map((notification) => `Notification: ${notification.message}`),
-    ...currentDocuments.slice(0, 2).map(
-      (item) => `Document uploaded: ${item.document.filename}`
-    ),
-    ...currentWorkItems.slice(0, 3).map(
-      (item) => `Work item updated: ${item.workItem.title}`
-    ),
-    ...currentAssignments.slice(0, 2).map(
-      (assignment) => `Assignment created for ${assignment.workItemId}`
-    ),
+  const recentActivityEntries: Array<{ icon: string; label: string; time: string }> = [
+    ...currentNotifications.slice(0, 2).map((n) => ({
+      icon: "🔔",
+      label: n.message,
+      time: formatDate(n.createdAt)
+    })),
+    ...currentDocuments.slice(0, 2).map((d) => ({
+      icon: "📄",
+      label: `Văn bản: ${d.document.filename}`,
+      time: formatDate(d.document.createdAt)
+    })),
+    ...currentWorkItems
+      .filter((item) => ACTIVE_WORK_ITEM_STATUSES.has(item.workItem.status))
+      .slice(0, 3)
+      .map((item) => ({
+        icon: "📂",
+        label: `${item.workItem.title} — ${getWorkItemStatusLabel(item.workItem.status)}`,
+        time: formatDate(item.workItem.updatedAt)
+      })),
     ...currentTaskItems
       .filter((item) => item.task.taskType === "school_workflow")
       .slice(0, 2)
-      .map((item) => `Task ${item.task.status}: ${item.task.title}`)
-  ].slice(0, 5);
+      .map((item) => ({
+        icon: "🏃",
+        label: `${item.task.title} — ${getTaskStatusLabel(item.task.status)}`,
+        time: formatDate(item.task.createdAt)
+      }))
+  ].slice(0, 6);
 
   recentActivityPanel.innerHTML =
-    recentActivity.length > 0
-      ? recentActivity
+    recentActivityEntries.length > 0
+      ? recentActivityEntries
           .map(
-            (item) => `
+            (entry) => `
               <article class="admin-item">
-                <p class="detail-value">${escapeHtml(item)}</p>
+                <div class="task-card-row">
+                  <p class="detail-value">${entry.icon} ${escapeHtml(entry.label)}</p>
+                  <span class="result-meta">${escapeHtml(entry.time)}</span>
+                </div>
               </article>
             `
           )
           .join("")
       : `
           <div class="empty-state">
-            Recent activity will appear here as work items, assignments, and department tasks move.
+            Hoạt động gần đây sẽ xuất hiện ở đây khi dữ liệu thay đổi.
           </div>
         `;
 
@@ -5678,17 +6085,16 @@ function renderOverview(): void {
               <article class="admin-item">
                 <div class="task-card-row">
                   <strong>${escapeHtml(item.name)}</strong>
-                  <span>${escapeHtml(String(item.assignmentCount))} assignments</span>
+                  <span class="status-badge">${escapeHtml(String(item.assignmentCount))} giao việc</span>
                 </div>
-                <p><strong>Documents:</strong> ${escapeHtml(String(item.documentCount))}</p>
-                <p><strong>Work items:</strong> ${escapeHtml(String(item.workItemCount))}</p>
+                <p style="font-size:13px;color:#57606a">Văn bản: ${escapeHtml(String(item.documentCount))} &nbsp;|&nbsp; Hồ sơ: ${escapeHtml(String(item.workItemCount))}</p>
               </article>
             `
           )
           .join("")
       : `
           <div class="empty-state">
-            Department summary will appear once departments are configured.
+            Chưa có đơn vị nào được cấu hình.
           </div>
         `;
 }
@@ -5726,37 +6132,242 @@ function renderReports(): void {
   const completedTasks = currentTaskItems.filter(
     (item) => item.task.status === "completed"
   ).length;
-  const failedTasks = currentTaskItems.filter(
-    (item) => item.task.status === "failed"
+  const inProgressTasks = currentTaskItems.filter(
+    (item) => item.task.status === "running"
   ).length;
-  const assignedWorkItems = currentWorkItems.filter(
-    (item) => item.workItem.status === "assigned"
+  const pendingTasks = currentTaskItems.filter(
+    (item) => item.task.status === "pending"
+  ).length;
+  const waitingReviewItems = currentWorkItems.filter(
+    (item) => item.workItem.status === "waiting_review"
+  ).length;
+  const waitingApprovalItems = currentWorkItems.filter(
+    (item) => item.workItem.status === "waiting_principal_approval"
+  ).length;
+  const overdueAssignments = currentAssignments.filter(
+    (a) => a.status === "overdue"
   ).length;
 
   reportCards.innerHTML = [
-    { label: "Completed Tasks", value: String(completedTasks) },
-    { label: "Failed Tasks", value: String(failedTasks) },
-    { label: "Assigned Work Items", value: String(assignedWorkItems) },
-    { label: "Active Session", value: currentSessionUserId ? "Yes" : "No" }
+    { label: "Hoàn thành", value: String(completedTasks) },
+    { label: "Đang thực hiện", value: String(inProgressTasks) },
+    { label: "Chờ tiếp nhận", value: String(pendingTasks) },
+    { label: "Chờ HT xem", value: String(waitingReviewItems) },
+    { label: "Chờ HT phê duyệt", value: String(waitingApprovalItems) },
+    { label: "Quá hạn", value: String(overdueAssignments) }
   ]
     .map(
       (card) => `
-        <article class="metric-card">
+        <article class="metric-card ${card.label === "Quá hạn" && Number(card.value) > 0 ? "metric-card-alert" : ""}">
           <p class="detail-label">${escapeHtml(card.label)}</p>
           <strong class="metric-value">${escapeHtml(card.value)}</strong>
         </article>
       `
     )
     .join("");
+}
 
-  reportCards.innerHTML += `
-    <article class="admin-item">
-      <p class="detail-label">Reporting Direction</p>
-      <p class="detail-value">
-        This reporting module is a live scaffold, not an error state. It already surfaces operational counts from the current API and is ready for richer analytics once aggregated reporting endpoints arrive.
-      </p>
-    </article>
-  `;
+async function loadAndRenderDailyReport(): Promise<void> {
+  try {
+    const response = await fetch("/api/agent/daily-report", {
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Không thể tải báo cáo ngày"));
+    }
+
+    const data = (await response.json()) as { report: {
+      date: string;
+      totalWorkItems: number;
+      byStatus: Record<string, number>;
+      overdueAssignments: number;
+      pendingReview: number;
+      completedToday: number;
+      byDepartment: Array<{ departmentName: string; total: number; overdue: number; completed: number }>;
+      needsAttention: Array<{ workItemId: string; title: string; reason: string; deadline?: string }>;
+    }};
+    const report = data.report;
+    const reportAttentionList = document.querySelector<HTMLDivElement>("#report-attention-list");
+    const reportDeptTable = document.querySelector<HTMLDivElement>("#report-department-table");
+
+    reportCards.innerHTML = [
+      { label: "Tổng hồ sơ", value: String(report.totalWorkItems) },
+      { label: "Hoàn thành hôm nay", value: String(report.completedToday) },
+      { label: "Chờ xét duyệt", value: String(report.pendingReview) },
+      { label: "Quá hạn", value: String(report.overdueAssignments) }
+    ]
+      .map(
+        (card) => `
+          <article class="metric-card ${card.label === "Quá hạn" && Number(card.value) > 0 ? "metric-card-alert" : ""}">
+            <p class="detail-label">${escapeHtml(card.label)}</p>
+            <strong class="metric-value">${escapeHtml(card.value)}</strong>
+          </article>
+        `
+      )
+      .join("");
+
+    if (reportAttentionList && report.needsAttention.length > 0) {
+      reportAttentionList.innerHTML = `
+        <h4 style="margin:0 0 8px">⚠️ Cần xử lý ngay</h4>
+        ${report.needsAttention.map((item) => `
+          <article class="admin-item">
+            <div class="admin-item-row">
+              <strong>${escapeHtml(item.title)}</strong>
+              <span class="status-badge status-alert">${escapeHtml(item.reason)}</span>
+            </div>
+            ${item.deadline ? `<p class="detail-label">Deadline: ${escapeHtml(new Date(item.deadline).toLocaleDateString("vi-VN"))}</p>` : ""}
+          </article>
+        `).join("")}
+      `;
+    } else if (reportAttentionList) {
+      reportAttentionList.innerHTML = '<p class="empty-state">Không có mục nào cần xử lý khẩn cấp.</p>';
+    }
+
+    if (reportDeptTable && report.byDepartment.length > 0) {
+      reportDeptTable.innerHTML = `
+        <h4 style="margin:0 0 8px">📊 Theo đơn vị</h4>
+        <table class="report-table">
+          <thead>
+            <tr><th>Đơn vị</th><th>Tổng</th><th>Quá hạn</th><th>Hoàn thành</th></tr>
+          </thead>
+          <tbody>
+            ${report.byDepartment.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.departmentName)}</td>
+                <td>${row.total}</td>
+                <td style="color:${row.overdue > 0 ? "#cf222e" : "inherit"}">${row.overdue}</td>
+                <td style="color:#1a7f37">${row.completed}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    setStatus("Báo cáo ngày đã được tải.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi tải báo cáo ngày.",
+      "error"
+    );
+  }
+}
+
+async function loadAndRenderWeeklyReport(): Promise<void> {
+  try {
+    const response = await fetch("/api/agent/weekly-report", {
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Không thể tải báo cáo tuần"));
+    }
+
+    const data = (await response.json()) as { report: {
+      completionRate: number;
+      topPerformingDepartments: string[];
+      bottlenecks: Array<{ workItemId: string; title: string; stalledDays: number }>;
+      weekStart: string;
+      weekEnd: string;
+      totalWorkItems: number;
+      overdueAssignments: number;
+      completedToday: number;
+      byDepartment: Array<{ departmentName: string; total: number; overdue: number; completed: number }>;
+      needsAttention: Array<{ workItemId: string; title: string; reason: string; deadline?: string }>;
+    }};
+    const report = data.report;
+    const reportAttentionList = document.querySelector<HTMLDivElement>("#report-attention-list");
+    const reportDeptTable = document.querySelector<HTMLDivElement>("#report-department-table");
+
+    reportCards.innerHTML = [
+      { label: "Tổng phát sinh", value: String(report.totalWorkItems) },
+      { label: "Tỉ lệ hoàn thành", value: `${report.completionRate}%` },
+      { label: "Quá hạn", value: String(report.overdueAssignments) }
+    ]
+      .map(
+        (card) => `
+          <article class="metric-card">
+            <p class="detail-label">${escapeHtml(card.label)}</p>
+            <strong class="metric-value">${escapeHtml(card.value)}</strong>
+          </article>
+        `
+      )
+      .join("");
+
+    if (reportAttentionList) {
+      reportAttentionList.innerHTML = `
+        ${report.topPerformingDepartments.length > 0 ? `
+          <h4 style="margin:0 0 8px">🏆 Đơn vị thực hiện tốt</h4>
+          <p>${report.topPerformingDepartments.map(escapeHtml).join(", ")}</p>
+        ` : ""}
+        ${report.bottlenecks.length > 0 ? `
+          <h4 style="margin:8px 0 8px">🚧 Ách tắc (không cập nhật > 3 ngày)</h4>
+          ${report.bottlenecks.map((item) => `
+            <article class="admin-item">
+              <strong>${escapeHtml(item.title)}</strong>
+              <span class="detail-label"> — ${item.stalledDays} ngày chưa cập nhật</span>
+            </article>
+          `).join("")}
+        ` : '<p class="empty-state">Không phát hiện ách tắc trong tuần này.</p>'}
+      `;
+    }
+
+    if (reportDeptTable && report.byDepartment.length > 0) {
+      reportDeptTable.innerHTML = `
+        <h4 style="margin:0 0 8px">📊 Theo đơn vị (tuần)</h4>
+        <table class="report-table">
+          <thead>
+            <tr><th>Đơn vị</th><th>Tổng</th><th>Quá hạn</th><th>Hoàn thành</th></tr>
+          </thead>
+          <tbody>
+            ${report.byDepartment.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.departmentName)}</td>
+                <td>${row.total}</td>
+                <td style="color:${row.overdue > 0 ? "#cf222e" : "inherit"}">${row.overdue}</td>
+                <td style="color:#1a7f37">${row.completed}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    setStatus("Báo cáo tuần đã được tải.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi tải báo cáo tuần.",
+      "error"
+    );
+  }
+
+}
+
+async function handleRunDeadlineReminders(): Promise<void> {
+  try {
+    setStatus("Đang chạy kiểm tra deadline...", "loading");
+    const response = await fetch("/api/agent/deadline-reminders", {
+      method: "POST",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Không thể chạy deadline reminders"));
+    }
+
+    const data = (await response.json()) as { result: { checked: number; remindersCreated: number; overdue: number } };
+    setStatus(
+      `Đã kiểm tra ${data.result.checked} nhiệm vụ. Gửi ${data.result.remindersCreated} nhắc việc. Quá hạn: ${data.result.overdue}.`,
+      "success"
+    );
+    await loadNotifications();
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi chạy deadline check.",
+      "error"
+    );
+  }
 }
 
 function syncSelectedWorkItem(): void {
@@ -5880,10 +6491,14 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       >
         Save
       </button>
-      <label class="secondary-button work-item-file-label" for="work-item-file-input">
+      <button
+        id="trigger-work-item-file-input"
+        class="secondary-button"
+        type="button"
+      >
         Upload
-      </label>
-      <input id="work-item-file-input" class="hidden" type="file" />
+      </button>
+      <input id="work-item-file-input" class="visually-hidden-file-input" type="file" multiple />
       <button
         id="analyze-work-item-button"
         class="secondary-button"
@@ -5899,7 +6514,21 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
               class="secondary-button danger-button"
               type="button"
             >
-              Delete
+              Xóa
+            </button>
+          `
+          : ""
+      }
+      ${
+        item.workItem.status === "completed" && isAdminLikeSession()
+          ? `
+            <button
+              id="archive-work-item-button"
+              class="secondary-button"
+              type="button"
+              data-archive-work-item-id="${escapeHtml(item.workItem.id)}"
+            >
+              Lưu trữ (Giai đoạn 9)
             </button>
           `
           : ""
@@ -5908,39 +6537,59 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     <section class="tab-panel" data-detail-panel="info">
       <div class="task-detail-grid">
         <div>
-          <p class="detail-label">Description</p>
+          <p class="detail-label">Mô tả</p>
           <p class="detail-value">${escapeHtml(item.workItem.description)}</p>
         </div>
         <div>
-          <p class="detail-label">Department</p>
-          <p class="detail-value">${escapeHtml(item.workItem.departmentId ?? "none")}</p>
+          <p class="detail-label">Đơn vị</p>
+          <p class="detail-value">${escapeHtml(item.workItem.departmentId ?? "—")}</p>
         </div>
         <div>
-          <p class="detail-label">Created By</p>
+          <p class="detail-label">Người tạo</p>
           <p class="detail-value">${escapeHtml(item.workItem.createdByUserId)}</p>
         </div>
         <div>
-          <p class="detail-label">Assigned To</p>
-          <p class="detail-value">${escapeHtml(item.workItem.assignedToUserId ?? "unassigned")}</p>
+          <p class="detail-label">Giao cho</p>
+          <p class="detail-value">${escapeHtml(item.workItem.assignedToUserId ?? "Chưa phân công")}</p>
         </div>
         <div>
-          <p class="detail-label">Assignment Status</p>
+          <p class="detail-label">Trạng thái giao việc</p>
           <p class="detail-value">${escapeHtml(
-            currentAssignment ? `Assigned (${currentAssignment.priority})` : "Not assigned yet"
+            currentAssignment ? `Đã giao (${currentAssignment.priority})` : "Chưa giao việc"
           )}</p>
         </div>
         <div>
-          <p class="detail-label">Lead Department</p>
-          <p class="detail-value">${escapeHtml(item.workItem.leadDepartmentId ?? "none")}</p>
+          <p class="detail-label">Đơn vị chủ trì</p>
+          <p class="detail-value">${escapeHtml(item.workItem.leadDepartmentId ?? "—")}</p>
         </div>
         <div>
-          <p class="detail-label">Routing Priority</p>
-          <p class="detail-value">${escapeHtml(item.workItem.routingPriority ?? "none")}</p>
+          <p class="detail-label">Độ ưu tiên</p>
+          <p class="detail-value">${escapeHtml(item.workItem.routingPriority ?? "—")}</p>
         </div>
         <div>
-          <p class="detail-label">Source Document</p>
+          <p class="detail-label">Mã hồ sơ (Intake Code)</p>
+          <p class="detail-value">${escapeHtml(item.workItem.intakeCode ?? "—")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Nguồn vào (Source Type)</p>
+          <p class="detail-value">${escapeHtml(item.workItem.sourceType ?? "—")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Loại đầu ra (Output Type)</p>
+          <p class="detail-value">${escapeHtml(item.workItem.outputType ?? "—")}</p>
+        </div>
+        <div>
+          <p class="detail-label">Thời hạn (Deadline)</p>
+          <p class="detail-value">${
+            item.workItem.deadline
+              ? new Date(item.workItem.deadline).toLocaleString("vi-VN")
+              : "—"
+          }</p>
+        </div>
+        <div>
+          <p class="detail-label">Văn bản nguồn</p>
           <div class="detail-value">
-            <p>${escapeHtml(linkedDocument?.document.filename ?? "none")}</p>
+            <p>${escapeHtml(linkedDocument?.document.filename ?? "—")}</p>
             ${
               linkedDocument?.document.hasFileContent
                 ? `
@@ -5950,7 +6599,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                       type="button"
                       data-open-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
                     >
-                      Open Source Document
+                      Mở văn bản nguồn
                     </button>
                     <button
                       class="secondary-button task-action-button"
@@ -5958,7 +6607,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                       data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
                       data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
                     >
-                      Download Source Document
+                      Tải văn bản nguồn
                     </button>
                   </div>
                 `
@@ -5970,21 +6619,21 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     </section>
     <section class="tab-panel hidden" data-detail-panel="assignment">
       <div class="task-output">
-        <p class="detail-label">Current Assignment</p>
+        <p class="detail-label">Phiếu giao hiện tại</p>
         <div class="detail-value">
           ${
             currentAssignment
               ? [
-                  `Main Department: ${escapeHtml(currentAssignment.mainDepartmentId)}`,
-                  `Deadline: ${escapeHtml(currentAssignment.deadline ?? "none")}`,
-                  `Priority: ${escapeHtml(currentAssignment.priority)}`,
-                  `Output: ${escapeHtml(currentAssignment.outputRequirement ?? "none")}`,
-                  `Note: ${escapeHtml(currentAssignment.note ?? "none")}`,
-                  `Task ID: ${escapeHtml(currentAssignment.taskId)}`
+                  `Đơn vị chủ trì: ${escapeHtml(currentAssignment.mainDepartmentId)}`,
+                  `Thời hạn: ${escapeHtml(currentAssignment.deadline ?? "—")}`,
+                  `Độ ưu tiên: ${escapeHtml(currentAssignment.priority)}`,
+                  `Yêu cầu đầu ra: ${escapeHtml(currentAssignment.outputRequirement ?? "—")}`,
+                  `Ghi chú: ${escapeHtml(currentAssignment.note ?? "—")}`,
+                  `Mã nhiệm vụ: ${escapeHtml(currentAssignment.taskId)}`
                 ]
                   .map((line) => `<p>${line}</p>`)
                   .join("")
-              : "<p>No assignment exists for this work item yet.</p>"
+              : "<p>Chưa có phiếu giao việc nào cho hồ sơ này.</p>"
           }
         </div>
         ${
@@ -5996,7 +6645,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                   class="secondary-button"
                   type="button"
                 >
-                  Open Linked Task
+                  Mở nhiệm vụ liên kết
                 </button>
                 ${
                   isAdminLikeSession() &&
@@ -6008,7 +6657,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                         class="primary-button"
                         type="button"
                       >
-                        Approve Response
+                        Phê duyệt kết quả
                       </button>
                     `
                     : ""
@@ -6021,10 +6670,10 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                         class="secondary-button danger-button"
                         type="button"
                       >
-                        Cancel Assignment
+                        Hủy giao việc
                       </button>
                       <span class="workflow-mini-note">
-                        Only use this when the handoff was created by mistake and the department has not started execution.
+                        Chỉ dùng khi phiếu giao được tạo nhầm và đơn vị chưa bắt đầu thực hiện.
                       </span>
                     `
                     : ""
@@ -6119,7 +6768,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       currentSessionUser?.role === "principal"
         ? `
           <div class="task-output assignment-form-card">
-            <p class="detail-label">Principal Assignment Flow</p>
+            <p class="detail-label">Luồng giao việc HT</p>
             <div class="admin-item-grid">
               <div class="field">
                 <label for="assignment-main-department">Main department</label>
@@ -6169,7 +6818,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
               </div>
               <div class="auth-actions">
                 <button id="assign-work-item-button" class="secondary-button" type="button">
-                  Assign Work Item
+                  Giao việc
                 </button>
               </div>
             </div>
@@ -6183,6 +6832,8 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     workItemModalBody.querySelector<HTMLButtonElement>("#save-work-item-button");
   const analyzeButton =
     workItemModalBody.querySelector<HTMLButtonElement>("#analyze-work-item-button");
+  const fileTriggerButton =
+    workItemModalBody.querySelector<HTMLButtonElement>("#trigger-work-item-file-input");
   const fileInput =
     workItemModalBody.querySelector<HTMLInputElement>("#work-item-file-input");
   const assignButton =
@@ -6198,6 +6849,10 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     await handleAnalyzeWorkItem(item.workItem.id);
   });
 
+  fileTriggerButton?.addEventListener("click", () => {
+    fileInput?.click();
+  });
+
   fileInput?.addEventListener("change", async () => {
     await handleUploadWorkItemFile(item.workItem.id, fileInput);
   });
@@ -6205,6 +6860,12 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
   deleteButton?.addEventListener("click", async () => {
     await handleDeleteWorkItem(item.workItem.id);
   });
+
+  workItemModalBody
+    .querySelector<HTMLButtonElement>("[data-archive-work-item-id]")
+    ?.addEventListener("click", async () => {
+      await handleArchiveWorkItem(item.workItem.id);
+    });
 
   assignButton?.addEventListener("click", async () => {
     await handleAssignWorkItem(item.workItem.id);
@@ -6287,10 +6948,10 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
 function hideWorkItemDetail(): void {
   currentWorkItemAssignments = [];
   workItemDetail.classList.add("hidden");
-  workItemDetailTitle.textContent = "Work Item Detail";
+  workItemDetailTitle.textContent = "Chi tiết hồ sơ";
   workItemDetailMeta.textContent = "";
   workItemDetailBody.innerHTML = "";
-  workItemModalTitle.textContent = "Work Item Detail";
+  workItemModalTitle.textContent = "Chi tiết hồ sơ";
   workItemModalMeta.textContent = "";
   workItemModalBody.innerHTML = "";
   workItemModal.classList.add("hidden");
@@ -6344,7 +7005,7 @@ function renderWorkItemStatusOptions(selectedStatus: WorkItemStatus): string {
     .map(
       (status) => `
         <option value="${escapeHtml(status)}" ${status === selectedStatus ? "selected" : ""}>
-          ${escapeHtml(status)}
+          ${escapeHtml(getWorkItemStatusLabel(status))}
         </option>
       `
     )
@@ -6590,6 +7251,10 @@ async function handlePrincipalReview(workItemId: string): Promise<void> {
     );
   const principalNoteInput =
     approvalsAssignmentList.querySelector<HTMLTextAreaElement>("#principal-note");
+  const principalOutputTypeInput =
+    approvalsAssignmentList.querySelector<HTMLSelectElement>("#principal-output-type");
+  const principalDeadlineInput =
+    approvalsAssignmentList.querySelector<HTMLInputElement>("#principal-deadline");
 
   if (
     !decisionInput ||
@@ -6630,7 +7295,11 @@ async function handlePrincipalReview(workItemId: string): Promise<void> {
             .filter(Boolean),
           priority: priorityInput.value,
           outputRequirement: outputRequirementInput.value.trim() || undefined,
-          principalNote: principalNoteInput.value.trim() || undefined
+          principalNote: principalNoteInput.value.trim() || undefined,
+          outputType: principalOutputTypeInput?.value || undefined,
+          deadline: principalDeadlineInput?.value
+            ? new Date(principalDeadlineInput.value).toISOString()
+            : undefined
         })
       }
     );
@@ -6676,6 +7345,13 @@ async function handleUploadWorkItemFile(
   if (files.length === 0) {
     return;
   }
+
+  setStatus(
+    files.length === 1
+      ? "Uploading response file..."
+      : `Uploading ${files.length} response files...`,
+    "loading"
+  );
 
   try {
     for (const file of files) {
@@ -6815,6 +7491,37 @@ function getNextTaskAction(task: Task): string {
   }
 
   return "Open the task detail to continue execution.";
+}
+
+function getTaskStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    pending: "Chờ tiếp nhận",
+    running: "Đang thực hiện",
+    completed: "Hoàn thành",
+    failed: "Thất bại",
+    report_submitted: "Đã nộp báo cáo",
+    waiting_quality_check: "Chờ kiểm tra chất lượng",
+    waiting_principal_approval: "Chờ HT phê duyệt"
+  };
+  return labels[status] ?? status;
+}
+
+function getWorkItemStatusLabel(status: WorkItemStatus): string {
+  const labels: Record<WorkItemStatus, string> = {
+    draft: "Nháp",
+    waiting_review: "Chờ HT xem xét",
+    waiting_assignment: "Chờ giao việc",
+    assigned: "Đã giao",
+    on_hold: "Tạm giữ",
+    in_review: "Đang kiểm tra",
+    needs_supplement: "Cần bổ sung",
+    needs_rework: "Cần làm lại",
+    late_explanation_required: "Cần giải trình trễ",
+    waiting_principal_approval: "Chờ HT phê duyệt",
+    completed: "Hoàn thành",
+    archived: "Đã lưu trữ"
+  };
+  return labels[status] ?? status;
 }
 
 function getNextWorkItemAction(status: WorkItemStatus): string {
@@ -7003,6 +7710,169 @@ async function handleCancelAssignment(assignmentId: string | null): Promise<void
       error instanceof Error
         ? error.message
         : "Something went wrong while cancelling the assignment.",
+      "error"
+    );
+  }
+}
+
+async function handleSubmitTaskReport(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  const noteInput = document.querySelector<HTMLTextAreaElement>(
+    `#task-report-note-${CSS.escape(taskId)}`
+  );
+  const reportNote = noteInput?.value.trim() ?? "";
+
+  if (reportNote.length < 10) {
+    setStatus("Vui lòng nhập nội dung báo cáo (ít nhất 10 ký tự).", "error");
+    return;
+  }
+
+  try {
+    setStatus("Đang nộp báo cáo kết quả...", "loading");
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/submit-report`, {
+      method: "POST",
+      headers: buildApiHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ reportNote })
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Không thể nộp báo cáo"));
+    }
+
+    await loadTasks();
+    await loadWorkItems();
+    await focusTaskById(taskId);
+    setStatus("Báo cáo đã nộp thành công. AI Agent sẽ kiểm tra chất lượng.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi nộp báo cáo.",
+      "error"
+    );
+  }
+}
+
+async function handleQualityCheck(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  try {
+    setStatus("AI Agent đang kiểm tra chất lượng hồ sơ...", "loading");
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/quality-check`, {
+      method: "POST",
+      headers: buildApiHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Không thể kiểm tra chất lượng"));
+    }
+
+    const data = (await response.json()) as {
+      task: Task;
+      checkResult: { passed: boolean; score: number; issues: string[]; recommendation: string };
+    };
+
+    await loadTasks();
+    await loadWorkItems();
+    await focusTaskById(taskId);
+
+    if (data.checkResult.passed) {
+      setStatus(`✅ Hồ sơ đạt yêu cầu (điểm: ${data.checkResult.score}/100). Sẵn sàng trình HT phê duyệt.`, "success");
+    } else {
+      setStatus(`⚠️ Hồ sơ chưa đạt (điểm: ${data.checkResult.score}/100): ${data.checkResult.issues.join(", ")}`, "error");
+    }
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi kiểm tra chất lượng.",
+      "error"
+    );
+  }
+}
+
+async function handlePrincipalApproveTask(taskId: string | null): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  const noteInput = document.querySelector<HTMLTextAreaElement>(
+    `#principal-approval-note-${CSS.escape(taskId)}`
+  );
+  const approvalNote = noteInput?.value.trim() || "Phê duyệt hoàn thành";
+
+  try {
+    setStatus("Đang phê duyệt...", "loading");
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/principal-approve`, {
+      method: "POST",
+      headers: buildApiHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ approvalNote })
+    });
+
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Không thể phê duyệt"));
+    }
+
+    await loadTasks();
+    await loadWorkItems();
+    await loadNotifications();
+    await focusTaskById(taskId);
+    setStatus("✅ Đã phê duyệt hoàn thành. Hồ sơ sẽ được lưu trữ.", "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi phê duyệt.",
+      "error"
+    );
+  }
+}
+
+async function handleUploadTaskEvidenceFile(
+  taskId: string | null,
+  input: HTMLInputElement
+): Promise<void> {
+  if (!taskId) {
+    return;
+  }
+
+  const files = Array.from(input.files ?? []);
+
+  if (files.length === 0) {
+    return;
+  }
+
+  setStatus(`Đang tải lên ${files.length} file minh chứng...`, "loading");
+
+  try {
+    for (const file of files) {
+      const contentBase64 = await readFileAsBase64(file);
+      const contentText = isInlineExtractableDocument(file)
+        ? sanitizeUploadedText(await file.text())
+        : undefined;
+
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/files`, {
+        method: "POST",
+        headers: buildApiHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type || "application/octet-stream",
+          sizeBytes: file.size,
+          contentBase64,
+          contentText
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Không thể tải file minh chứng"));
+      }
+    }
+
+    input.value = "";
+    await focusTaskById(taskId);
+    setStatus(`${files.length} file minh chứng đã tải lên thành công.`, "success");
+  } catch (error: unknown) {
+    setStatus(
+      error instanceof Error ? error.message : "Lỗi tải file minh chứng.",
       "error"
     );
   }
@@ -7306,54 +8176,54 @@ function renderCurrentView(): void {
 
   const titles: Record<typeof currentView, { eyebrow: string; title: string; description: string }> = {
     overview: {
-      eyebrow: "Overview",
-      title: "Workflow Control Center",
-      description: "See intake pressure, principal routing load, execution progress, and review bottlenecks in one place."
+      eyebrow: "Tổng quan",
+      title: "Bảng điều khiển vận hành",
+      description: "Xem áp lực tiếp nhận, tải phân luồng của HT, tiến độ thực hiện và các điểm tắc nghẽn trong một màn hình."
     },
     documents: {
-      eyebrow: "Step 1",
-      title: "Intake Inbox",
-      description: "Receive documents, analyze their contents, and prepare the principal-facing record without leaving the intake flow."
+      eyebrow: "Giai đoạn 1 – Tiếp nhận",
+      title: "Hộp thư tiếp nhận văn bản",
+      description: "Tiếp nhận văn bản, phân tích nội dung và chuẩn bị hồ sơ cho HT xem xét ngay trong luồng tiếp nhận."
     },
     "work-items": {
-      eyebrow: "Records",
-      title: "Case Record Workspace",
-      description: "Open the full record only when you need the complete file, assignment context, review history, and approvals."
+      eyebrow: "Hồ sơ",
+      title: "Không gian quản lý hồ sơ",
+      description: "Mở hồ sơ đầy đủ khi cần xem file gốc, trạng thái giao việc, lịch sử xét duyệt và phê duyệt."
     },
     assignments: {
-      eyebrow: "Assignments",
-      title: "Assignment Tracking",
-      description: "Assignment tracking remains available internally, but the main workflow now lives in Principal Routing."
+      eyebrow: "Giao việc",
+      title: "Theo dõi giao việc",
+      description: "Quản lý giao việc — hiện đã tích hợp vào màn hình Phân luồng HT."
     },
     "department-tasks": {
-      eyebrow: "Step 4",
-      title: "Department Execution",
-      description: "Open the task, see the source context, upload evidence, update progress, and submit the department response."
+      eyebrow: "Giai đoạn 4 – Thực hiện",
+      title: "Thực hiện công việc tại đơn vị",
+      description: "Mở nhiệm vụ, xem ngữ cảnh nguồn, đính kèm minh chứng, cập nhật tiến độ và nộp báo cáo kết quả."
     },
     approvals: {
-      eyebrow: "Step 2 & 3",
-      title: "Principal Routing & Assignment",
-      description: "Route each intake record, choose the lead unit, then stay in the same workspace to create and track the assignment handoff."
+      eyebrow: "Giai đoạn 2 & 3",
+      title: "Phân luồng HT & Giao việc",
+      description: "Phân luồng từng hồ sơ tiếp nhận, chọn đơn vị chủ trì, rồi ở lại cùng không gian để tạo và theo dõi việc giao."
     },
     reports: {
-      eyebrow: "Reports",
-      title: "Operational Summary",
-      description: "Use a lightweight reporting view to monitor completion, backlog, and assignment flow."
+      eyebrow: "Báo cáo",
+      title: "Tổng hợp vận hành",
+      description: "Theo dõi hoàn thành, tồn đọng và luồng giao việc qua báo cáo ngày/tuần từ AI Agent."
     },
     admin: {
-      eyebrow: "Admin",
-      title: "School Administration",
-      description: "School admin tools are isolated in their own view instead of the main dashboard."
+      eyebrow: "Quản trị",
+      title: "Quản trị nhà trường",
+      description: "Cấu hình đơn vị và phân công người dùng — chỉ dùng cho cài đặt ban đầu."
     },
     account: {
-      eyebrow: "Account",
-      title: "Session & Password Controls",
-      description: "Manage login, password change, and dev fallback controls in a dedicated account area."
+      eyebrow: "Tài khoản",
+      title: "Phiên làm việc & Mật khẩu",
+      description: "Quản lý đăng nhập, đổi mật khẩu và điều khiển phiên làm việc."
     },
     legacy: {
-      eyebrow: "Legacy",
-      title: "Legacy Growth Tools",
-      description: "Legacy growth-task workflows remain available without taking over the main school workflow layout."
+      eyebrow: "Cũ",
+      title: "Công cụ cũ (Legacy)",
+      description: "Các luồng công việc cũ vẫn khả dụng nhưng không ảnh hưởng đến luồng chính của nhà trường."
     }
   };
 
@@ -7378,11 +8248,11 @@ function renderWorkflowChrome(): void {
     label: string;
     title: string;
   }> = [
-    { key: "documents", label: "Step 1", title: "Intake" },
-    { key: "approvals", label: "Step 2", title: "Route & Assign" },
-    { key: "department-tasks", label: "Step 3", title: "Execute" },
-    { key: "work-items", label: "Step 4", title: "Review Record" },
-    { key: "reports", label: "Step 5", title: "Track & Report" }
+    { key: "documents", label: "G1", title: "Tiếp nhận" },
+    { key: "approvals", label: "G2-3", title: "HT phân luồng" },
+    { key: "department-tasks", label: "G4", title: "Thực hiện" },
+    { key: "work-items", label: "G6-8", title: "Báo cáo & Duyệt" },
+    { key: "reports", label: "G9", title: "Theo dõi & Lưu trữ" }
   ];
 
   workflowStepper.innerHTML = workflowSteps
@@ -7436,117 +8306,122 @@ function renderWorkflowChrome(): void {
   > = {
     overview: [
       {
-        title: "Start with new intake",
-        detail: "Open Intake Inbox, review the extracted summary, then create the principal-facing record.",
+        title: "Bắt đầu với tiếp nhận văn bản mới",
+        detail: "Mở Giai đoạn 1, xem tóm tắt AI, rồi tạo hồ sơ chuyển cho HT xem xét.",
         targetView: "documents",
         kind: "primary"
       },
       {
-        title: "Process principal decisions",
-        detail: "Route records and create assignment handoff without leaving the workflow workspace.",
+        title: "Xử lý quyết định phân luồng của HT",
+        detail: "Phân luồng hồ sơ và tạo phiếu giao việc ngay trong cùng không gian làm việc.",
         targetView: "approvals"
       },
       {
-        title: "Check department follow-up",
-        detail: "Open active execution tasks, see blockers, and watch for missing submissions.",
+        title: "Kiểm tra tiến độ thực hiện tại đơn vị",
+        detail: "Mở nhiệm vụ đang chạy, xem vướng mắc và theo dõi báo cáo còn thiếu.",
         targetView: "department-tasks"
       }
     ],
     documents: [
       {
-        title: "1. Review or upload a source document",
-        detail: "Use OCR/extracted text as the intake preview so the record is created with context, not guesswork.",
+        title: "1. Tải lên hoặc xem văn bản nguồn",
+        detail: "Dùng văn bản OCR/trích xuất làm xem trước tiếp nhận để hồ sơ được tạo có ngữ cảnh đầy đủ.",
         kind: "primary"
       },
       {
-        title: "2. Analyze the intake",
-        detail: "Run intake analysis before creating the work item if the summary still looks incomplete."
+        title: "2. Phân tích văn bản",
+        detail: "Chạy AI phân tích trước khi tạo hồ sơ nếu tóm tắt vẫn chưa rõ ràng."
       },
       {
-        title: "3. Create the work item record",
-        detail: "Once the intake looks right, convert it into a routed case for principal review.",
+        title: "3. Tạo hồ sơ công việc",
+        detail: "Khi tiếp nhận xong, chuyển văn bản thành hồ sơ để HT xem xét phân luồng.",
         targetView: "approvals"
       }
     ],
     approvals: [
       {
-        title: "1. Pick the routing direction",
-        detail: "Choose whether the item should move forward, go back for intake completion, or be put on hold.",
+        title: "1. Chọn hướng xử lý",
+        detail: "Quyết định hồ sơ đi tiếp, trả lại bổ sung hay tạm giữ — ghi rõ lý do.",
         kind: "primary"
       },
       {
-        title: "2. Set lead department, priority, and output",
-        detail: "Keep all routing decisions and assignment prep in this same workspace."
+        title: "2. Đặt đơn vị chủ trì, mức độ ưu tiên và thời hạn",
+        detail: "Toàn bộ quyết định phân luồng và chuẩn bị giao việc thực hiện trong cùng không gian này."
       },
       {
-        title: "3. Dispatch the assignment",
-        detail: "After saving the principal decision, scroll to Assignment Handoff and open the record workspace if needed.",
-        targetView: "work-items"
+        title: "3. Giao việc cho đơn vị",
+        detail: "Sau khi lưu quyết định HT, cuộn xuống phần Giao việc và theo dõi tiến độ tiếp nhận.",
+        targetView: "department-tasks"
       }
     ],
     "department-tasks": [
       {
-        title: "1. Accept or request adjustment",
-        detail: "A pending assignment should not sit silently. Confirm it or bounce it back with a reason.",
+        title: "1. Tiếp nhận hoặc yêu cầu điều chỉnh",
+        detail: "Nhiệm vụ đang chờ không được để im. Xác nhận tiếp nhận hoặc trả lại kèm lý do.",
         kind: "primary"
       },
       {
-        title: "2. Upload evidence and response files",
-        detail: "Use Upload Response File for one or many files, then check Attachments immediately in the open task."
+        title: "2. Cập nhật tiến độ và đính kèm minh chứng",
+        detail: "Dùng chức năng tải file minh chứng, kiểm tra đính kèm ngay trong nhiệm vụ đang mở."
       },
       {
-        title: "3. Mark response submitted",
-        detail: "Submission moves the record into review. It is not completed until principal approval."
+        title: "3. Nộp báo cáo kết quả (Giai đoạn 6)",
+        detail: "Nộp báo cáo chuyển hồ sơ sang chờ HT phê duyệt — chưa hoàn thành cho đến khi HT duyệt."
       }
     ],
     "work-items": [
       {
-        title: "1. Review the full record",
-        detail: "Use this screen for source files, assignment state, review history, and final approval actions.",
+        title: "1. Xem hồ sơ đầy đủ",
+        detail: "Dùng màn hình này để xem file nguồn, trạng thái giao việc, lịch sử xét duyệt và hành động phê duyệt cuối.",
         kind: "primary"
       },
       {
-        title: "2. Check files and assignment tab",
-        detail: "If a department submitted work, verify the attachments and open the linked task when needed."
+        title: "2. Kiểm tra file và tab giao việc",
+        detail: "Nếu đơn vị đã nộp báo cáo, kiểm tra đính kèm và mở nhiệm vụ liên kết khi cần."
       },
       {
-        title: "3. Approve the response",
-        detail: "Principal/admin should approve here once the record is ready for completion."
+        title: "3. Phê duyệt và lưu trữ",
+        detail: "HT phê duyệt khi hồ sơ đã hoàn thành, sau đó lưu trữ vào kho (Giai đoạn 9)."
       }
     ],
     assignments: [
       {
-        title: "Assignments are now part of Principal Routing",
-        detail: "Use the routing workspace to create and monitor handoff instead of jumping across modules.",
+        title: "Giao việc đã tích hợp vào Phân luồng HT",
+        detail: "Dùng không gian phân luồng để tạo và theo dõi phiếu giao thay vì nhảy qua màn hình này.",
         targetView: "approvals",
         kind: "primary"
       }
     ],
     reports: [
       {
-        title: "Review bottlenecks and workload",
-        detail: "Use Reports for the operational picture after intake, routing, and execution data have moved.",
+        title: "Xem tắc nghẽn và khối lượng công việc",
+        detail: "Dùng Báo cáo để có bức tranh vận hành sau khi dữ liệu tiếp nhận, phân luồng và thực hiện đã di chuyển.",
         kind: "primary"
+      },
+      {
+        title: "Lưu trữ hồ sơ hoàn thành (Giai đoạn 9)",
+        detail: "Mở hồ sơ đã hoàn thành trong tab Hồ sơ và dùng nút Lưu trữ để chuyển sang kho lưu trữ.",
+        targetView: "work-items"
       }
     ],
     admin: [
       {
-        title: "Admin is for setup, not daily execution",
-        detail: "Manage departments and users here, then move back to the workflow views for operational work.",
+        title: "Quản trị chỉ dùng cho cài đặt",
+        detail: "Quản lý đơn vị và người dùng ở đây, sau đó quay lại màn hình vận hành để làm việc hàng ngày.",
         kind: "primary"
       }
     ],
     account: [
       {
-        title: "Account controls only",
-        detail: "Login, session, and password change live here so they do not interrupt the workflow screens.",
+        title: "Chỉ dùng điều khiển tài khoản",
+        detail: "Đăng nhập, phiên làm việc và đổi mật khẩu ở đây để không làm gián đoạn màn hình vận hành.",
         kind: "primary"
       }
     ],
     legacy: [
       {
-        title: "Legacy tools are isolated",
-        detail: "Use this only for old growth-task workflows that are outside the school process.",
+        title: "Công cụ cũ được tách biệt",
+        detail: "Chỉ dùng cho các luồng công việc cũ không thuộc quy trình nhà trường.",
         kind: "primary"
       }
     ]
@@ -7556,8 +8431,8 @@ function renderWorkflowChrome(): void {
   workflowGuidance.innerHTML = `
     <div class="panel-header">
       <div>
-        <p class="eyebrow">Next Actions</p>
-        <h3>What to do in this step</h3>
+        <p class="eyebrow">Bước tiếp theo</p>
+        <h3>Cần làm gì trong bước này</h3>
       </div>
     </div>
     <div class="workflow-actions-grid">
@@ -7575,7 +8450,7 @@ function renderWorkflowChrome(): void {
                       type="button"
                       data-guidance-view="${escapeHtml(action.targetView)}"
                     >
-                      Open ${escapeHtml(titlesForView(action.targetView))}
+                      Mở: ${escapeHtml(titlesForView(action.targetView))}
                     </button>
                   `
                   : ""
@@ -7604,25 +8479,25 @@ function renderWorkflowChrome(): void {
 function titlesForView(view: typeof currentView): string {
   switch (view) {
     case "documents":
-      return "Intake Inbox";
+      return "Tiếp nhận văn bản";
     case "approvals":
-      return "Principal Routing";
+      return "Phân luồng HT";
     case "department-tasks":
-      return "Department Execution";
+      return "Thực hiện";
     case "work-items":
-      return "Records";
+      return "Hồ sơ";
     case "reports":
-      return "Reports";
+      return "Báo cáo";
     case "admin":
-      return "Admin";
+      return "Quản trị";
     case "account":
-      return "Account";
+      return "Tài khoản";
     case "legacy":
-      return "Legacy";
+      return "Cũ (Legacy)";
     case "overview":
-      return "Overview";
+      return "Tổng quan";
     case "assignments":
-      return "Assignments";
+      return "Giao việc";
   }
 }
 
