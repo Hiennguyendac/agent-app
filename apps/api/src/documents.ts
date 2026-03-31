@@ -22,6 +22,7 @@ export interface CreateDocumentInput {
   extractedText?: string;
   contentBase64?: string;
   ocrStatus?: "pending" | "ready" | "failed";
+  uploadGroupId?: string;
 }
 
 export interface DownloadableDocumentFile {
@@ -65,9 +66,10 @@ export async function createDocument(
         extracted_text,
         content_base64,
         ocr_status,
+        upload_group_id,
         uploaded_by_user_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING
         id,
         filename,
@@ -77,6 +79,7 @@ export async function createDocument(
         extracted_text,
         content_base64,
         ocr_status,
+        upload_group_id,
         uploaded_by_user_id,
         created_work_item_id,
         created_at
@@ -90,6 +93,9 @@ export async function createDocument(
       extractionResult.extractedText ?? sanitizedExtractedText,
       input.contentBase64 ?? null,
       extractionResult.ocrStatus ?? input.ocrStatus ?? "ready",
+      typeof input.uploadGroupId === "string"
+        ? stripNullCharacters(input.uploadGroupId)
+        : null,
       uploadedByUserId
     ]
   );
@@ -110,8 +116,13 @@ export async function listDocuments(
         d.size_bytes,
         d.metadata_json,
         d.extracted_text,
-        d.content_base64,
+        CASE
+          WHEN (d.content_base64 IS NOT NULL AND d.content_base64 <> '') THEN true
+          WHEN (d.extracted_text IS NOT NULL AND d.extracted_text <> '') THEN true
+          ELSE false
+        END AS has_file_content,
         d.ocr_status,
+        d.upload_group_id,
         d.uploaded_by_user_id,
         d.created_work_item_id,
         d.created_at
@@ -152,6 +163,7 @@ export async function getDocumentById(
         d.extracted_text,
         d.content_base64,
         d.ocr_status,
+        d.upload_group_id,
         d.uploaded_by_user_id,
         d.created_work_item_id,
         d.created_at
@@ -224,7 +236,8 @@ export async function analyzeDocument(
 export async function createWorkItemFromDocument(
   documentId: string,
   input: CreateWorkItemInput,
-  accessContext: TaskAccessContext
+  accessContext: TaskAccessContext,
+  additionalDocumentIds: string[] = []
 ): Promise<{ document: Document; workItem: WorkItem } | null> {
   const detail = await getDocumentById(documentId, accessContext);
 
@@ -233,6 +246,7 @@ export async function createWorkItemFromDocument(
   }
 
   const workItem = await createWorkItem(input, accessContext.userId);
+
   const result = await getDbPool().query(
     `
       UPDATE documents
@@ -245,14 +259,51 @@ export async function createWorkItemFromDocument(
         size_bytes,
         metadata_json,
         extracted_text,
-        content_base64,
+        CASE
+          WHEN (content_base64 IS NOT NULL AND content_base64 <> '') THEN true
+          WHEN (extracted_text IS NOT NULL AND extracted_text <> '') THEN true
+          ELSE false
+        END AS has_file_content,
         ocr_status,
+        upload_group_id,
         uploaded_by_user_id,
         created_work_item_id,
         created_at
     `,
     [documentId, workItem.id]
   );
+
+  // Link any additional documents from the same upload batch to this work item
+  const relatedDocumentIds = new Set(
+    additionalDocumentIds.filter((id) => id !== documentId)
+  );
+
+  if (detail.document.uploadGroupId) {
+    const groupedDocuments = await getDbPool().query(
+      `
+        SELECT id
+        FROM documents
+        WHERE upload_group_id = $1
+          AND uploaded_by_user_id = $2
+          AND id <> $3
+          AND created_work_item_id IS NULL
+      `,
+      [detail.document.uploadGroupId, accessContext.userId, documentId]
+    );
+
+    for (const row of groupedDocuments.rows) {
+      if (typeof row.id === "string") {
+        relatedDocumentIds.add(row.id);
+      }
+    }
+  }
+
+  if (relatedDocumentIds.size > 0) {
+    await getDbPool().query(
+      `UPDATE documents SET created_work_item_id = $1 WHERE id = ANY($2::TEXT[])`,
+      [workItem.id, [...relatedDocumentIds]]
+    );
+  }
 
   return {
     document: mapDocumentRow(result.rows[0]),
@@ -264,24 +315,21 @@ export async function getDocumentDownloadFile(
   documentId: string,
   accessContext: TaskAccessContext
 ): Promise<DownloadableDocumentFile | null> {
-  const detail = await getDocumentById(documentId, accessContext);
-
-  if (!detail) {
-    return null;
-  }
-
+  // Single query: access-controlled + returns file content
+  const access = buildDocumentAccessFilter(2, accessContext);
   const result = await getDbPool().query(
     `
       SELECT
-        filename,
-        content_type,
-        content_base64,
-        extracted_text
-      FROM documents
-      WHERE id = $1
+        d.filename,
+        d.content_type,
+        d.content_base64,
+        d.extracted_text
+      FROM documents d
+      WHERE d.id = $1
+      ${access.expression ? `AND (${access.expression})` : ""}
       LIMIT 1
     `,
-    [documentId]
+    [documentId, ...access.values]
   );
 
   if (result.rows.length === 0) {
@@ -399,6 +447,14 @@ async function listLatestAnalysesForDocuments(
 }
 
 function mapDocumentRow(row: Record<string, unknown>): Document {
+  // has_file_content may come from a SQL CASE expression (list query)
+  // or be computed from content_base64/extracted_text (detail query)
+  const hasFileContent =
+    typeof row.has_file_content === "boolean"
+      ? row.has_file_content
+      : (typeof row.content_base64 === "string" && row.content_base64.length > 0) ||
+        (typeof row.extracted_text === "string" && row.extracted_text.length > 0);
+
   return {
     id: String(row.id),
     filename: String(row.filename),
@@ -411,14 +467,14 @@ function mapDocumentRow(row: Record<string, unknown>): Document {
         : {},
     extractedText:
       typeof row.extracted_text === "string" ? row.extracted_text : undefined,
-    hasFileContent:
-      (typeof row.content_base64 === "string" && row.content_base64.length > 0) ||
-      (typeof row.extracted_text === "string" && row.extracted_text.length > 0),
+    hasFileContent,
     ocrStatus:
       row.ocr_status === "pending" || row.ocr_status === "failed"
         ? row.ocr_status
         : "ready",
     uploadedByUserId: String(row.uploaded_by_user_id),
+    uploadGroupId:
+      typeof row.upload_group_id === "string" ? row.upload_group_id : undefined,
     createdWorkItemId:
       typeof row.created_work_item_id === "string"
         ? row.created_work_item_id

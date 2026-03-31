@@ -254,6 +254,7 @@ interface Document {
   hasFileContent?: boolean;
   ocrStatus: DocumentOcrStatus;
   uploadedByUserId: string;
+  uploadGroupId?: string;
   createdWorkItemId?: string;
   createdAt: string;
 }
@@ -377,6 +378,8 @@ let currentDepartments: Department[] = [];
 let currentUsers: AppUserProfile[] = [];
 let currentDocuments: DocumentListItem[] = [];
 let selectedDocumentId: string | null = null;
+// IDs of documents uploaded in the most recent batch (cleared when a work item is created)
+let lastUploadBatchIds: string[] = [];
 let currentAnalyzingDocumentId: string | null = null;
 let currentWorkItems: WorkItemListItem[] = [];
 let selectedWorkItemId: string | null = null;
@@ -444,24 +447,28 @@ app.innerHTML = `
   <main class="app-shell">
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <p class="eyebrow">Hệ thống Quản lý Công việc</p>
-        <h1>Nội bộ trường học</h1>
-        <p class="intro">Tiếp nhận, phân luồng, giao việc và theo dõi thực hiện tập trung từ một nơi.</p>
+        <div class="sidebar-logo-icon">🏫</div>
+        <div class="sidebar-brand-text">
+          <p class="eyebrow">Trường học</p>
+          <h1>Quản lý Nội bộ</h1>
+        </div>
       </div>
       <nav class="sidebar-nav" aria-label="Primary">
-        <button class="nav-button" type="button" data-view="overview">📊 Tổng quan</button>
-        <button class="nav-button" type="button" data-view="documents">📥 Tiếp nhận</button>
-        <button class="nav-button" type="button" data-view="approvals">⚖️ Phân luồng HT</button>
-        <button class="nav-button" type="button" data-view="department-tasks">🏃 Thực hiện</button>
-        <button class="nav-button" type="button" data-view="work-items">📂 Hồ sơ</button>
-        <button class="nav-button" type="button" data-view="reports">📈 Báo cáo</button>
-        <button class="nav-button" type="button" data-view="admin">⚙️ Quản trị</button>
-        <button class="nav-button" type="button" data-view="account">👤 Tài khoản</button>
-        <button class="nav-button" type="button" data-view="legacy">🔧 Legacy</button>
+        <p class="sidebar-section-label">Quy trình</p>
+        <button class="nav-button" type="button" data-view="overview"><span class="nav-emoji">📊</span> Tổng quan</button>
+        <button class="nav-button" type="button" data-view="documents"><span class="nav-emoji">📥</span> Tiếp nhận <span class="nav-badge hidden" id="nav-badge-documents"></span></button>
+        <button class="nav-button" type="button" data-view="approvals"><span class="nav-emoji">⚖️</span> Phân luồng HT <span class="nav-badge hidden" id="nav-badge-approvals"></span></button>
+        <button class="nav-button" type="button" data-view="department-tasks"><span class="nav-emoji">✅</span> Thực hiện <span class="nav-badge hidden" id="nav-badge-department-tasks"></span></button>
+        <button class="nav-button" type="button" data-view="work-items"><span class="nav-emoji">📂</span> Hồ sơ</button>
+        <button class="nav-button" type="button" data-view="reports"><span class="nav-emoji">📈</span> Báo cáo</button>
+        <p class="sidebar-section-label">Hệ thống</p>
+        <button class="nav-button" type="button" data-view="admin"><span class="nav-emoji">⚙️</span> Quản trị</button>
+        <button class="nav-button" type="button" data-view="account"><span class="nav-emoji">👤</span> Tài khoản</button>
+        <button class="nav-button hidden" type="button" data-view="legacy"><span class="nav-emoji">🔧</span> Legacy</button>
       </nav>
       <section class="sidebar-account">
-        <p class="detail-label">Người dùng hiện tại</p>
-        <p id="session-user" class="mock-user-active">Đang kiểm tra phiên...</p>
+        <p class="detail-label">Người dùng</p>
+        <p id="session-user" class="mock-user-active">Đang kiểm tra...</p>
         <p id="identity-source" class="identity-source-note">Đang xác thực...</p>
         <p id="active-user" class="identity-source-note"></p>
       </section>
@@ -476,19 +483,13 @@ app.innerHTML = `
             Tải văn bản, xem tóm tắt AI và tạo hồ sơ công việc từ các văn bản đã xác minh.
           </p>
         </div>
-        <section class="account-card" aria-label="Current account">
-          <p class="detail-label">Tài khoản</p>
-          <p class="detail-value">Đăng nhập, đổi mật khẩu và điều khiển phiên làm việc.</p>
-          <div class="auth-actions">
-            <button class="secondary-button" type="button" data-view="account">Mở tài khoản</button>
-          </div>
-        </section>
+        <div id="topbar-user-chip" class="topbar-user-chip">
+          <span id="topbar-user-label"></span>
+        </div>
       </header>
 
       <p id="status-message" class="status-message" aria-live="polite"></p>
       <p id="context-status-message" class="status-message status-message-context hidden" aria-live="polite"></p>
-      <section id="workflow-stepper" class="workflow-stepper panel" aria-label="Workflow steps"></section>
-      <section id="workflow-guidance" class="workflow-guidance panel" aria-label="Next actions"></section>
 
       <section id="overview-view" class="content-view">
         <div class="overview-grid">
@@ -546,11 +547,12 @@ app.innerHTML = `
               <summary>Tải lên văn bản mới</summary>
               <form id="document-form" class="task-form disclosure-form" novalidate>
                 <div class="field">
-                  <label for="document-file">File văn bản</label>
-                  <input id="document-file" name="documentFile" type="file" multiple />
+                  <label for="document-file">File văn bản <span class="workflow-mini-note">(có thể chọn nhiều file)</span></label>
+                  <input id="document-file" name="documentFile" type="file" multiple accept=".pdf,.docx,.doc,.txt,.md,.csv,.xlsx,.png,.jpg,.jpeg" />
+                  <div id="document-file-preview" class="workflow-inline-hint" style="margin-top:0.25rem;"></div>
                 </div>
                 <div class="field">
-                  <label for="document-title">Ghi chú</label>
+                  <label for="document-title">Ghi chú chung</label>
                   <input id="document-title" name="documentTitle" type="text" placeholder="Văn bản đến từ Sở/Phòng/Phụ huynh..." />
                 </div>
                 <div class="field">
@@ -561,6 +563,8 @@ app.innerHTML = `
               </form>
             </details>
           </div>
+
+          <div id="document-batch-bar" class="hidden"></div>
 
           <div class="work-item-layout app-split-layout">
             <div id="document-list" class="task-list split-list"></div>
@@ -1135,6 +1139,8 @@ const createUserButton =
 const documentForm = document.querySelector<HTMLFormElement>("#document-form")!;
 const documentFileInput =
   document.querySelector<HTMLInputElement>("#document-file")!;
+const documentFilePreview =
+  document.querySelector<HTMLDivElement>("#document-file-preview")!;
 const documentTitleInput =
   document.querySelector<HTMLInputElement>("#document-title")!;
 const documentMetadataInput =
@@ -1146,6 +1152,7 @@ const refreshDocumentsButton =
 const documentSearchInput =
   document.querySelector<HTMLInputElement>("#document-search")!;
 const documentList = document.querySelector<HTMLDivElement>("#document-list")!;
+const documentBatchBar = document.querySelector<HTMLDivElement>("#document-batch-bar")!;
 const documentDetail = document.querySelector<HTMLElement>("#document-detail")!;
 const documentDetailTitle =
   document.querySelector<HTMLHeadingElement>("#document-detail-title")!;
@@ -1211,10 +1218,6 @@ const viewEyebrow = document.querySelector<HTMLParagraphElement>("#view-eyebrow"
 const viewTitle = document.querySelector<HTMLHeadingElement>("#view-title")!;
 const viewDescription =
   document.querySelector<HTMLParagraphElement>("#view-description")!;
-const workflowStepper =
-  document.querySelector<HTMLElement>("#workflow-stepper")!;
-const workflowGuidance =
-  document.querySelector<HTMLElement>("#workflow-guidance")!;
 const overviewView = document.querySelector<HTMLElement>("#overview-view")!;
 const documentsView = document.querySelector<HTMLElement>("#documents-view")!;
 const workItemsView = document.querySelector<HTMLElement>("#work-items-view")!;
@@ -1342,8 +1345,6 @@ if (
   !viewEyebrow ||
   !viewTitle ||
   !viewDescription ||
-  !workflowStepper ||
-  !workflowGuidance ||
   !overviewView ||
   !documentsView ||
   !workItemsView ||
@@ -1417,7 +1418,7 @@ navButtons.forEach((button) => {
     }
 
     if (nextView === "admin" && !isAdminLikeSession()) {
-      setStatus("Admin access is required for this view.", "error");
+      setStatus("Chỉ quản trị viên mới có thể truy cập giao diện này.", "error");
       return;
     }
 
@@ -1526,17 +1527,17 @@ loginButton.addEventListener("click", async () => {
   const password = passwordInput.value;
 
   if (username.length === 0) {
-    setStatus("Username is required to log in.", "error");
+    setStatus("Vui lòng nhập tên đăng nhập.", "error");
     return;
   }
 
   if (password.length === 0) {
-    setStatus("Password is required to log in.", "error");
+    setStatus("Vui lòng nhập mật khẩu.", "error");
     return;
   }
 
   setAuthButtonsDisabled(true);
-  setStatus("Logging in...", "loading");
+  setStatus("Đang đăng nhập...", "loading");
 
   try {
     const response = await fetch("/api/auth/login", {
@@ -1567,12 +1568,12 @@ loginButton.addEventListener("click", async () => {
     await loadTasks();
     await loadAssignments();
     await loadNotifications();
-    setStatus("Logged in successfully.", "success");
+    setStatus("Đăng nhập thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while logging in.",
+        : "Có lỗi xảy ra khi đăng nhập.",
       "error"
     );
   } finally {
@@ -1585,22 +1586,22 @@ changePasswordButton.addEventListener("click", async () => {
   const newPassword = newPasswordInput.value;
 
   if (!currentSessionUserId) {
-    setStatus("You must be logged in to change your password.", "error");
+    setStatus("Bạn cần đăng nhập để đổi mật khẩu.", "error");
     return;
   }
 
   if (currentPassword.length === 0) {
-    setStatus("Current password is required.", "error");
+    setStatus("Vui lòng nhập mật khẩu hiện tại.", "error");
     return;
   }
 
   if (newPassword.length === 0) {
-    setStatus("New password is required.", "error");
+    setStatus("Vui lòng nhập mật khẩu mới.", "error");
     return;
   }
 
   setAuthButtonsDisabled(true);
-  setStatus("Changing password...", "loading");
+  setStatus("Đang đổi mật khẩu...", "loading");
 
   try {
     const response = await fetch("/api/auth/change-password", {
@@ -1623,12 +1624,12 @@ changePasswordButton.addEventListener("click", async () => {
     const _data = (await response.json()) as SuccessResponse;
     currentPasswordInput.value = "";
     newPasswordInput.value = "";
-    setStatus("Password changed successfully.", "success");
+    setStatus("Đổi mật khẩu thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while changing the password.",
+        : "Có lỗi xảy ra khi đổi mật khẩu.",
       "error"
     );
   } finally {
@@ -1638,7 +1639,7 @@ changePasswordButton.addEventListener("click", async () => {
 
 logoutButton.addEventListener("click", async () => {
   setAuthButtonsDisabled(true);
-  setStatus("Logging out...", "loading");
+  setStatus("Đang đăng xuất...", "loading");
 
   try {
     const response = await fetch("/api/auth/logout", {
@@ -1663,12 +1664,12 @@ logoutButton.addEventListener("click", async () => {
     await loadTasks();
     await loadAssignments();
     await loadNotifications();
-    setStatus("Logged out successfully.", "success");
+    setStatus("Đã đăng xuất.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while logging out.",
+        : "Có lỗi xảy ra khi đăng xuất.",
       "error"
     );
   } finally {
@@ -1681,17 +1682,17 @@ createDepartmentButton.addEventListener("click", async () => {
   const code = departmentCodeInput.value.trim();
 
   if (!isPrincipalSession()) {
-    setStatus("Principal access is required.", "error");
+    setStatus("Chỉ Hiệu trưởng mới có thể tạo đơn vị.", "error");
     return;
   }
 
   if (name.length === 0) {
-    setStatus("Department name is required.", "error");
+    setStatus("Vui lòng nhập tên đơn vị.", "error");
     return;
   }
 
   createDepartmentButton.disabled = true;
-  setStatus("Creating department...", "loading");
+  setStatus("Đang tạo đơn vị...", "loading");
 
   try {
     const response = await fetch("/api/departments", {
@@ -1714,12 +1715,12 @@ createDepartmentButton.addEventListener("click", async () => {
     departmentNameInput.value = "";
     departmentCodeInput.value = "";
     await loadAdminData();
-    setStatus("Department created successfully.", "success");
+    setStatus("Đã tạo đơn vị thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while creating the department.",
+        : "Có lỗi xảy ra khi tạo đơn vị.",
       "error"
     );
   } finally {
@@ -1751,6 +1752,17 @@ document.querySelector<HTMLButtonElement>("#run-reminders-button")
     await handleRunDeadlineReminders();
   });
 
+documentFileInput.addEventListener("change", () => {
+  const files = Array.from(documentFileInput.files ?? []);
+  if (files.length === 0) {
+    documentFilePreview.textContent = "";
+  } else if (files.length === 1) {
+    documentFilePreview.textContent = `1 file đã chọn: ${files[0].name}`;
+  } else {
+    documentFilePreview.textContent = `${files.length} file đã chọn: ${files.map((f) => f.name).join(", ")}`;
+  }
+});
+
 documentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await handleCreateDocument();
@@ -1760,7 +1772,7 @@ workItemForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   if (!canUseWorkItems()) {
-    setStatus("Your current role cannot create work items.", "error");
+    setStatus("Vai trò hiện tại của bạn không thể tạo hồ sơ công việc.", "error");
     return;
   }
 
@@ -1769,12 +1781,12 @@ workItemForm.addEventListener("submit", async (event) => {
   const departmentId = workItemDepartmentSelect.value || "";
 
   if (title.length === 0) {
-    setStatus("Work item title is required.", "error");
+    setStatus("Vui lòng nhập tiêu đề hồ sơ.", "error");
     return;
   }
 
   if (description.length === 0) {
-    setStatus("Work item description is required.", "error");
+    setStatus("Vui lòng nhập mô tả hồ sơ.", "error");
     return;
   }
 
@@ -1839,9 +1851,9 @@ workItemForm.addEventListener("submit", async (event) => {
 });
 
 refreshWorkItemsButton.addEventListener("click", async () => {
-  setStatus("Refreshing work items...", "loading");
+  setStatus("Đang làm mới danh sách hồ sơ...", "loading");
   await loadWorkItems();
-  setStatus("Work items refreshed.", "success");
+  setStatus("Đã làm mới danh sách hồ sơ.", "success");
 });
 
 form.addEventListener("submit", async (event) => {
@@ -1879,11 +1891,11 @@ form.addEventListener("submit", async (event) => {
   }
 
   if (titleErrorMessage || goalErrorMessage || audienceErrorMessage) {
-    setStatus("Please fix the form errors and try again.", "error");
+    setStatus("Vui lòng sửa lỗi trong biểu mẫu trước khi tiếp tục.", "error");
     return;
   }
 
-  setStatus("Creating Growth task...", "loading");
+  setStatus("Đang tạo nhiệm vụ Growth...", "loading");
 
   /**
    * Important: disable the form only after reading FormData.
@@ -1909,7 +1921,7 @@ form.addEventListener("submit", async (event) => {
 
     const data = (await response.json()) as CreateTaskResponse;
 
-    setStatus("Growth task created successfully.", "success");
+    setStatus("Đã tạo nhiệm vụ Growth thành công.", "success");
     showLatestResult(data.task.id, data.result);
     form.reset();
     templateSelect.value = "";
@@ -1920,7 +1932,7 @@ form.addEventListener("submit", async (event) => {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while creating the task.",
+        : "Có lỗi xảy ra khi tạo nhiệm vụ.",
       "error"
     );
   } finally {
@@ -1930,9 +1942,9 @@ form.addEventListener("submit", async (event) => {
 });
 
 refreshButton.addEventListener("click", async () => {
-  setStatus("Refreshing task list...", "loading");
+  setStatus("Đang làm mới danh sách nhiệm vụ...", "loading");
   await loadTasks();
-  setStatus("Task list refreshed.", "success");
+  setStatus("Đã làm mới danh sách nhiệm vụ.", "success");
 });
 
 /**
@@ -1977,7 +1989,7 @@ async function loadTasks(): Promise<void> {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while loading tasks.",
+        : "Có lỗi xảy ra khi tải danh sách nhiệm vụ.",
       "error"
     );
   }
@@ -2137,13 +2149,13 @@ function renderTaskList(tasks: TaskListItem[]): void {
             <span>${escapeHtml(getOwnerLabel(task.task.ownerId))}</span>
             ${
               linkedWI?.workItem.deadline
-                ? `<span style="color:${isOverdueTask ? "#cf222e" : "#57606a"}">${isOverdueTask ? "⚠ QUÁ HẠN" : "Hạn"}: ${new Date(linkedWI.workItem.deadline).toLocaleDateString("vi-VN")}</span>`
+                ? `<span style="color:${isOverdueTask ? "#dc2626" : "#57606a"}">${isOverdueTask ? "⚠ QUÁ HẠN" : "Hạn"}: ${new Date(linkedWI.workItem.deadline).toLocaleDateString("vi-VN")}</span>`
                 : `<span>${formatDate(task.task.createdAt)}</span>`
             }
           </div>
           ${task.task.progressPercent != null && task.task.progressPercent > 0 ? `
-            <div style="background:#eaeef2;border-radius:4px;height:4px;margin:4px 0">
-              <div style="background:#0969da;height:4px;border-radius:4px;width:${Math.min(task.task.progressPercent, 100)}%"></div>
+            <div style="background:#e2e8f0;border-radius:4px;height:4px;margin:4px 0">
+              <div style="background:#2563eb;height:4px;border-radius:4px;width:${Math.min(task.task.progressPercent, 100)}%"></div>
             </div>
           ` : ""}
           <div class="auth-actions">
@@ -2674,9 +2686,14 @@ async function refreshSelectedTaskContext(): Promise<void> {
 function findLinkedDocumentByWorkItemId(
   workItemId: string
 ): DocumentListItem | null {
-  return (
-    currentDocuments.find((item) => item.document.createdWorkItemId === workItemId) ??
-    null
+  return findLinkedDocumentsByWorkItemId(workItemId)[0] ?? null;
+}
+
+function findLinkedDocumentsByWorkItemId(
+  workItemId: string
+): DocumentListItem[] {
+  return currentDocuments.filter(
+    (item) => item.document.createdWorkItemId === workItemId
   );
 }
 
@@ -2727,6 +2744,12 @@ function syncLatestResult(taskItems: TaskListItem[]): void {
 function renderTaskDetail(taskItem: TaskListItem): string {
   const linkedWorkItem =
     selectedTaskId === taskItem.task.id ? currentSelectedTaskWorkItem : null;
+  const linkedDocuments =
+    linkedWorkItem?.workItem.id
+      ? findLinkedDocumentsByWorkItemId(linkedWorkItem.workItem.id)
+      : taskItem.task.workItemId
+        ? findLinkedDocumentsByWorkItemId(taskItem.task.workItemId)
+        : [];
   const linkedDocument =
     selectedTaskId === taskItem.task.id
       ? findRelatedDocumentForTask(taskItem, currentSelectedTaskWorkItem)
@@ -2850,8 +2873,12 @@ function renderTaskDetail(taskItem: TaskListItem): string {
           ${linkedWorkItem?.workItem.intakeCode ? `<p><strong>Mã hồ sơ:</strong> ${escapeHtml(linkedWorkItem.workItem.intakeCode)}</p>` : ""}
           ${linkedWorkItem?.workItem.sourceType ? `<p><strong>Nguồn vào:</strong> ${escapeHtml(linkedWorkItem.workItem.sourceType)}</p>` : ""}
           ${linkedWorkItem?.workItem.outputType ? `<p><strong>Loại đầu ra:</strong> ${escapeHtml(linkedWorkItem.workItem.outputType)}</p>` : ""}
-          ${linkedWorkItem?.workItem.deadline ? `<p><strong style="color:#b35c00">⏰ Thời hạn:</strong> ${escapeHtml(new Date(linkedWorkItem.workItem.deadline).toLocaleString("vi-VN"))}</p>` : ""}
-          <p><strong>Source Document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "—")}</p>
+          ${linkedWorkItem?.workItem.deadline ? `<p><strong style="color:#b45309">⏰ Thời hạn:</strong> ${escapeHtml(new Date(linkedWorkItem.workItem.deadline).toLocaleString("vi-VN"))}</p>` : ""}
+          <p><strong>Source Documents:</strong> ${
+            linkedDocuments.length > 0
+              ? escapeHtml(linkedDocuments.map((item) => item.document.filename).join(", "))
+              : escapeHtml(linkedDocument?.document.filename ?? "—")
+          }</p>
           ${
             linkedWorkItem?.workItem.id
               ? `
@@ -2863,33 +2890,6 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                   >
                     Mở hồ sơ
                   </button>
-                  ${
-                    linkedDocument?.document.id
-                      ? `
-                        <button
-                          class="secondary-button task-action-button"
-                          type="button"
-                          data-open-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
-                        >
-                          Mở văn bản nguồn
-                        </button>
-                        ${
-                          linkedDocument.document.hasFileContent
-                            ? `
-                              <button
-                                class="secondary-button task-action-button"
-                                type="button"
-                                data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
-                                data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
-                              >
-                                Tải văn bản nguồn
-                              </button>
-                            `
-                            : ""
-                        }
-                      `
-                      : ""
-                  }
                 </div>
               `
               : ""
@@ -2926,26 +2926,39 @@ function renderTaskDetail(taskItem: TaskListItem): string {
                     `
                   )
                   .join("")
-              : linkedDocument
-                ? `
-                    <div class="task-card-row">
-                      <span>${escapeHtml(linkedDocument.document.filename)} (source document)</span>
-                      ${
-                        linkedDocument.document.hasFileContent
-                          ? `
+              : linkedDocuments.length > 0
+                ? linkedDocuments
+                    .map(
+                      (item) => `
+                        <div class="task-card-row">
+                          <span>${escapeHtml(item.document.filename)} (source document)</span>
+                          <div class="auth-actions">
                             <button
                               class="secondary-button task-action-button"
                               type="button"
-                              data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
-                              data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
+                              data-open-linked-document-id="${escapeHtml(item.document.id)}"
                             >
-                              Download
+                              Mở
                             </button>
-                          `
-                          : ""
-                      }
-                    </div>
-                  `
+                            ${
+                              item.document.hasFileContent
+                                ? `
+                                  <button
+                                    class="secondary-button task-action-button"
+                                    type="button"
+                                    data-download-linked-document-id="${escapeHtml(item.document.id)}"
+                                    data-download-linked-document-filename="${escapeHtml(item.document.filename)}"
+                                  >
+                                    Download
+                                  </button>
+                                `
+                                : ""
+                            }
+                          </div>
+                        </div>
+                      `
+                    )
+                    .join("")
                 : "<p>No files attached to this task yet.</p>"
           }
         </div>
@@ -3311,7 +3324,7 @@ async function handleCopyAction(button: HTMLButtonElement): Promise<void> {
   const taskItem = currentTaskItems.find((item) => item.task.id === taskId);
 
   if (!taskItem) {
-    setStatus("The selected task could not be found.", "error");
+    setStatus("Không tìm thấy nhiệm vụ đã chọn.", "error");
     return;
   }
 
@@ -3334,7 +3347,7 @@ async function handleCopyAction(button: HTMLButtonElement): Promise<void> {
           : "Copy Result"
     );
   } catch {
-    setStatus("Copy failed. Your browser may not allow clipboard access.", "error");
+    setStatus("Sao chép thất bại. Trình duyệt có thể không cho phép truy cập clipboard.", "error");
   }
 }
 
@@ -3365,13 +3378,13 @@ async function handleRetryTask(
   const taskItem = currentTaskItems.find((item) => item.task.id === taskId);
 
   if (!taskItem) {
-    setStatus("The selected task could not be found.", "error");
+    setStatus("Không tìm thấy nhiệm vụ đã chọn.", "error");
     return;
   }
 
-  flashButtonLabel(button, "Retrying...", "Retry Task", 1200);
+  flashButtonLabel(button, "Đang thử lại...", "Thử lại", 1200);
 
-  setStatus("Retrying task...", "loading");
+  setStatus("Đang thử lại nhiệm vụ...", "loading");
 
   try {
     const response = await fetch("/api/tasks", {
@@ -3394,7 +3407,7 @@ async function handleRetryTask(
 
     const data = (await response.json()) as CreateTaskResponse;
 
-    setStatus("Task retried successfully.", "success");
+    setStatus("Đã thử lại nhiệm vụ thành công.", "success");
     showLatestResult(data.task.id, data.result);
     await loadTasks();
     selectedTaskId = data.task.id;
@@ -3403,7 +3416,7 @@ async function handleRetryTask(
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while retrying the task.",
+        : "Có lỗi xảy ra khi thử lại nhiệm vụ.",
       "error"
     );
   }
@@ -3417,8 +3430,8 @@ async function handleDeleteTask(
     return;
   }
 
-  flashButtonLabel(button, "Deleting...", "Delete Task", 1200);
-  setStatus("Deleting task...", "loading");
+  flashButtonLabel(button, "Đang xóa...", "Xóa nhiệm vụ", 1200);
+  setStatus("Đang xóa nhiệm vụ...", "loading");
 
   try {
     const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
@@ -3437,12 +3450,12 @@ async function handleDeleteTask(
     }
 
     await loadTasks();
-    setStatus("Task deleted successfully.", "success");
+    setStatus("Đã xóa nhiệm vụ thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while deleting the task.",
+        : "Có lỗi xảy ra khi xóa nhiệm vụ.",
       "error"
     );
   }
@@ -3455,13 +3468,13 @@ async function handleDeleteWorkItem(workItemId: string | null): Promise<void> {
 
   if (
     !window.confirm(
-      "Delete this work item only if it was created by mistake and has no assignment or task history. This cannot be undone."
+      "Chỉ xóa hồ sơ này nếu nó được tạo nhầm và chưa có phiếu giao hoặc lịch sử nhiệm vụ. Không thể hoàn tác."
     )
   ) {
     return;
   }
 
-  setStatus("Deleting work item...", "loading");
+  setStatus("Đang xóa hồ sơ công việc...", "loading");
 
   try {
     const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}`, {
@@ -3477,12 +3490,12 @@ async function handleDeleteWorkItem(workItemId: string | null): Promise<void> {
     closeWorkItemModal();
     await loadWorkItems();
     await loadAssignments();
-    setStatus("Work item deleted successfully.", "success");
+    setStatus("Đã xóa hồ sơ công việc thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while deleting the work item.",
+        : "Có lỗi xảy ra khi xóa hồ sơ công việc.",
       "error"
     );
   }
@@ -4217,17 +4230,17 @@ async function handleCreateUser(
   const password = passwordField.value;
 
   if (username.length === 0) {
-    setStatus("Username is required.", "error");
+    setStatus("Vui lòng nhập tên đăng nhập.", "error");
     return;
   }
 
   if (password.length === 0) {
-    setStatus("Password is required.", "error");
+    setStatus("Vui lòng nhập mật khẩu.", "error");
     return;
   }
 
   button.disabled = true;
-  setStatus("Creating user...", "loading");
+  setStatus("Đang tạo người dùng...", "loading");
 
   try {
     const response = await fetch("/api/users", {
@@ -4260,12 +4273,12 @@ async function handleCreateUser(
     positionField.value = "";
     activeField.checked = true;
     await loadAdminData();
-    setStatus("User created successfully.", "success");
+    setStatus("Đã tạo người dùng thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while creating the user.",
+        : "Có lỗi xảy ra khi tạo người dùng.",
       "error"
     );
   } finally {
@@ -4349,7 +4362,7 @@ async function loadAdminData(): Promise<void> {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while loading admin data.",
+        : "Có lỗi xảy ra khi tải dữ liệu quản trị.",
       "error"
     );
   }
@@ -4390,7 +4403,7 @@ async function loadDocuments(): Promise<void> {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while loading documents.",
+        : "Có lỗi xảy ra khi tải danh sách tài liệu.",
       "error"
     );
   }
@@ -4417,11 +4430,17 @@ function renderDocumentList(items: DocumentListItem[]): void {
   if (filteredItems.length === 0) {
     documentList.innerHTML = `
       <div class="empty-state">
-        No documents match the current search.
+        Không có tài liệu nào khớp với tìm kiếm.
       </div>
     `;
     return;
   }
+
+  const ocrStatusLabel: Record<string, string> = {
+    ready: "Sẵn sàng",
+    pending: "Đang xử lý",
+    failed: "Lỗi trích xuất"
+  };
 
   documentList.innerHTML = filteredItems
     .map(
@@ -4430,13 +4449,13 @@ function renderDocumentList(items: DocumentListItem[]): void {
           <div class="task-card-row list-row-header">
             <h3 class="list-row-title">${escapeHtml(item.document.filename)}</h3>
             <span class="status-badge status-${escapeHtml(item.document.ocrStatus)}">
-              ${escapeHtml(item.document.ocrStatus)}
+              ${escapeHtml(ocrStatusLabel[item.document.ocrStatus] ?? item.document.ocrStatus)}
             </span>
           </div>
           <div class="list-row-meta">
-            <span>Uploaded by ${escapeHtml(item.document.uploadedByUserId)}</span>
             <span>${formatDate(item.document.createdAt)}</span>
-            <span>${escapeHtml(item.document.createdWorkItemId ? "Linked work item" : "No work item")}</span>
+            <span>${escapeHtml(item.document.createdWorkItemId ? "Đã tạo hồ sơ" : "Chưa tạo hồ sơ")}</span>
+            ${item.document.hasFileContent ? "" : `<span style="color:#dc2626">Không có nội dung tải xuống</span>`}
           </div>
           <div class="auth-actions">
             <button
@@ -4517,7 +4536,7 @@ async function selectDocumentById(documentId: string | null): Promise<void> {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while loading the document.",
+        : "Có lỗi xảy ra khi tải tài liệu.",
       "error"
     );
   }
@@ -4569,6 +4588,12 @@ function renderDocumentDetail(item: DocumentListItem): void {
       <button id="create-document-work-item-button" class="secondary-button" type="button">
         Tạo hồ sơ công việc
       </button>
+      <button
+        id="download-document-button"
+        class="secondary-button"
+        type="button"
+        ${!item.document.hasFileContent ? "disabled title=\"Không có nội dung để tải xuống\"" : ""}
+      >Tải xuống</button>
     </div>
     <section class="tab-panel" data-document-panel="summary">
       <div class="task-output">
@@ -4638,6 +4663,24 @@ function renderDocumentDetail(item: DocumentListItem): void {
       await handleCreateWorkItemFromDocument(item.document.id);
     });
 
+
+  documentModalBody
+    .querySelector<HTMLButtonElement>("#download-document-button")
+    ?.addEventListener("click", async () => {
+      try {
+        await downloadApiFile(
+          `/api/documents/${encodeURIComponent(item.document.id)}/download`,
+          item.document.filename,
+          "Tải xuống tài liệu thành công."
+        );
+      } catch (error: unknown) {
+        setStatus(
+          error instanceof Error ? error.message : "Không thể tải xuống tài liệu.",
+          "error"
+        );
+      }
+    });
+
   openDocumentModal();
   setActiveDocumentDetailTab("summary");
 }
@@ -4683,14 +4726,14 @@ function closeDocumentModal(): void {
 
 async function handleCreateDocument(): Promise<void> {
   if (!canUseDocumentIntake()) {
-    setStatus("You must be logged in to upload a document.", "error");
+    setStatus("Bạn cần đăng nhập để tải lên tài liệu.", "error");
     return;
   }
 
   const files = Array.from(documentFileInput.files ?? []);
 
   if (files.length === 0) {
-    setStatus("At least one document file is required.", "error");
+    setStatus("Vui lòng chọn ít nhất một file để tải lên.", "error");
     return;
   }
 
@@ -4721,13 +4764,15 @@ async function handleCreateDocument(): Promise<void> {
   createDocumentButton.disabled = true;
   setStatus(
     files.length === 1
-      ? "Uploading document..."
-      : `Uploading ${files.length} documents...`,
+      ? "Đang tải lên tài liệu..."
+      : `Đang tải lên ${files.length} tài liệu...`,
     "loading"
   );
 
   try {
     let lastUploadedDocumentId: string | null = null;
+    const uploadedBatchIds: string[] = [];
+    const uploadGroupId = files.length > 1 ? createUploadGroupId() : undefined;
 
     for (const file of files) {
       const canInlineExtractText = isInlineExtractableDocument(file);
@@ -4759,27 +4804,32 @@ async function handleCreateDocument(): Promise<void> {
           metadata,
           extractedText,
           contentBase64,
-          ocrStatus
+          ocrStatus,
+          uploadGroupId
         })
       });
 
       if (!response.ok) {
         throw new Error(
-          await readApiError(response, "The API could not upload the document")
+          await readApiError(response, "Không thể tải lên tài liệu")
         );
       }
 
       const data = (await response.json()) as DocumentResponse;
       lastUploadedDocumentId = data.document.id;
+      uploadedBatchIds.push(data.document.id);
     }
+
+    lastUploadBatchIds = uploadedBatchIds;
 
     documentForm.reset();
     documentMetadataInput.value = "";
     documentTitleInput.value = "";
+    documentFilePreview.textContent = "";
     setStatus(
       files.length === 1
-        ? "Document uploaded successfully."
-        : `${files.length} documents uploaded successfully.`,
+        ? "Tải lên tài liệu thành công."
+        : `Tải lên ${files.length} tài liệu thành công.`,
       "success"
     );
 
@@ -4788,11 +4838,12 @@ async function handleCreateDocument(): Promise<void> {
       if (lastUploadedDocumentId) {
         await selectDocumentById(lastUploadedDocumentId);
       }
+      renderDocumentBatchBar();
     } catch {
       setStatus(
         files.length === 1
-          ? "Document uploaded successfully. Refresh the intake list if the new record is not shown yet."
-          : `${files.length} documents uploaded successfully. Refresh the intake list if the new records are not shown yet.`,
+          ? "Tải lên thành công. Làm mới danh sách nếu tài liệu chưa hiển thị."
+          : `Tải lên ${files.length} tài liệu thành công. Làm mới danh sách nếu chưa hiển thị.`,
         "success"
       );
     }
@@ -4800,7 +4851,7 @@ async function handleCreateDocument(): Promise<void> {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while uploading the document.",
+        : "Có lỗi khi tải lên tài liệu.",
       "error"
     );
   } finally {
@@ -4830,6 +4881,14 @@ function sanitizeUploadedText(value: string): string {
   return value.replaceAll("\u0000", "").trim();
 }
 
+function createUploadGroupId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `upload_${crypto.randomUUID()}`;
+  }
+
+  return `upload_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 async function readFileAsBase64(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
@@ -4851,7 +4910,7 @@ async function handleAnalyzeDocument(documentId: string): Promise<void> {
       renderDocumentDetail(currentDetail);
     }
 
-    setStatus("Analyzing document intake...", "loading");
+    setStatus("Đang phân tích tài liệu tiếp nhận...", "loading");
     const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/analyze`, {
       method: "POST",
       headers: buildApiHeaders()
@@ -4866,7 +4925,7 @@ async function handleAnalyzeDocument(documentId: string): Promise<void> {
     const _data = (await response.json()) as DocumentAnalysisResponse;
     await loadDocuments();
     await selectDocumentById(documentId);
-    setStatus("Document analysis completed.", "success");
+    setStatus("Phân tích tài liệu hoàn thành.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
@@ -4885,9 +4944,13 @@ async function handleAnalyzeDocument(documentId: string): Promise<void> {
   }
 }
 
-async function handleCreateWorkItemFromDocument(documentId: string): Promise<void> {
+async function handleCreateWorkItemFromDocument(
+  documentId: string,
+  additionalDocumentIds: string[] = []
+): Promise<void> {
   try {
     const detail = currentDocuments.find((item) => item.document.id === documentId);
+    const extra = additionalDocumentIds.filter((id) => id !== documentId);
     const response = await fetch(
       `/api/documents/${encodeURIComponent(documentId)}/create-work-item`,
       {
@@ -4896,36 +4959,96 @@ async function handleCreateWorkItemFromDocument(documentId: string): Promise<voi
           "Content-Type": "application/json"
         }),
         body: JSON.stringify({
-          title: detail ? `School Workflow: ${detail.document.filename}` : undefined,
+          title: detail ? `Tiếp nhận: ${detail.document.filename}` : undefined,
           description:
             detail?.latestAnalysis?.summary ??
             detail?.document.extractedText?.slice(0, 1200) ??
-            undefined
+            undefined,
+          additionalDocumentIds: extra.length > 0 ? extra : undefined
         })
       }
     );
 
     if (!response.ok) {
       throw new Error(
-        await readApiError(response, "The API could not create a work item from the document")
+        await readApiError(response, "Không thể tạo hồ sơ công việc từ tài liệu")
       );
     }
 
     const data = (await response.json()) as CreateWorkItemFromDocumentResponse;
+    // Clear the batch once grouped into a work item
+    lastUploadBatchIds = [];
+    documentBatchBar.innerHTML = "";
+    documentBatchBar.classList.add("hidden");
     await loadDocuments();
     await loadWorkItems();
     currentView = "work-items";
     renderCurrentView();
     await selectWorkItemById(data.workItem.id);
-    setStatus("Work item created from document.", "success");
+    setStatus(
+      extra.length > 0
+        ? `Đã tạo hồ sơ từ ${extra.length + 1} tài liệu.`
+        : "Đã tạo hồ sơ công việc từ tài liệu.",
+      "success"
+    );
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while creating the work item.",
+        : "Có lỗi khi tạo hồ sơ công việc.",
       "error"
     );
   }
+}
+
+function renderDocumentBatchBar(): void {
+  const unlinkedBatch = lastUploadBatchIds.filter(
+    (id) => !currentDocuments.find((d) => d.document.id === id && d.document.createdWorkItemId)
+  );
+
+  if (unlinkedBatch.length < 2) {
+    documentBatchBar.innerHTML = "";
+    documentBatchBar.classList.add("hidden");
+    return;
+  }
+
+  const batchTitles = unlinkedBatch
+    .map((id) => currentDocuments.find((d) => d.document.id === id)?.document.filename ?? id)
+    .join(", ");
+
+  documentBatchBar.classList.remove("hidden");
+  documentBatchBar.innerHTML = `
+    <article class="workflow-attention-card" style="margin-bottom:0.75rem;">
+      <div>
+        <p class="eyebrow">Batch vừa tải lên – ${unlinkedBatch.length} tài liệu</p>
+        <p>${escapeHtml(batchTitles)}</p>
+        <p class="workflow-inline-hint">Nhóm tất cả vào một hồ sơ để HT phân luồng cùng lúc.</p>
+      </div>
+      <div class="auth-actions" style="margin-top:0.5rem;">
+        <button id="batch-create-work-item-button" class="primary-button" type="button">
+          Tạo một hồ sơ cho ${unlinkedBatch.length} tài liệu
+        </button>
+        <button id="batch-dismiss-button" class="secondary-button" type="button">
+          Bỏ qua
+        </button>
+      </div>
+    </article>
+  `;
+
+  documentBatchBar
+    .querySelector<HTMLButtonElement>("#batch-create-work-item-button")
+    ?.addEventListener("click", async () => {
+      const primaryId = unlinkedBatch[0];
+      await handleCreateWorkItemFromDocument(primaryId, unlinkedBatch);
+    });
+
+  documentBatchBar
+    .querySelector<HTMLButtonElement>("#batch-dismiss-button")
+    ?.addEventListener("click", () => {
+      lastUploadBatchIds = [];
+      documentBatchBar.innerHTML = "";
+      documentBatchBar.classList.add("hidden");
+    });
 }
 
 async function loadWorkItems(): Promise<void> {
@@ -5049,7 +5172,7 @@ function renderWorkItemList(items: WorkItemListItem[]): void {
             <span>${escapeHtml(item.workItem.createdByUserId)}</span>
             ${
               item.workItem.deadline
-                ? `<span style="color:${isOverdue ? "#cf222e" : "#57606a"}">${isOverdue ? "⚠ QUÁ HẠN" : "Hạn"}: ${new Date(item.workItem.deadline).toLocaleDateString("vi-VN")}</span>`
+                ? `<span style="color:${isOverdue ? "#dc2626" : "#57606a"}">${isOverdue ? "⚠ QUÁ HẠN" : "Hạn"}: ${new Date(item.workItem.deadline).toLocaleDateString("vi-VN")}</span>`
                 : `<span>${formatDate(item.workItem.updatedAt)}</span>`
             }
           </div>
@@ -5180,16 +5303,15 @@ function renderAssignmentsList(assignments: Assignment[]): void {
       (assignment) => `
         <article class="admin-item">
           <div class="task-card-row">
-            <strong>${escapeHtml(assignment.workItemId)}</strong>
-            <span class="status-badge status-running">${escapeHtml(assignment.priority)}</span>
+            <strong>${escapeHtml(currentWorkItems.find(i => i.workItem.id === assignment.workItemId)?.workItem.title ?? assignment.workItemId)}</strong>
+            <span class="status-badge status-${escapeHtml(assignment.status)}">${escapeHtml(getAssignmentStatusLabel(assignment.status))}</span>
           </div>
-          <p><strong>Main Department:</strong> ${escapeHtml(assignment.mainDepartmentId)}</p>
-          <p><strong>Status:</strong> ${escapeHtml(assignment.status)}</p>
-          <p><strong>Task:</strong> ${escapeHtml(assignment.taskId)}</p>
-          <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "—")}</p>
-          <p><strong>Output:</strong> ${escapeHtml(assignment.outputRequirement ?? "—")}</p>
-          <p><strong>Adjustment Reason:</strong> ${escapeHtml(assignment.adjustmentReason ?? "—")}</p>
-          <p><strong>Created:</strong> ${formatDate(assignment.createdAt)}</p>
+          <p><strong>Đơn vị chủ trì:</strong> ${escapeHtml(getDepartmentName(assignment.mainDepartmentId))}</p>
+          <p><strong>Mức ưu tiên:</strong> ${escapeHtml(getPriorityLabel(assignment.priority))}</p>
+          <p><strong>Thời hạn:</strong> ${assignment.deadline ? new Date(assignment.deadline).toLocaleDateString("vi-VN") : "—"}</p>
+          ${assignment.outputRequirement ? `<p><strong>Yêu cầu kết quả:</strong> ${escapeHtml(assignment.outputRequirement)}</p>` : ""}
+          ${assignment.adjustmentReason ? `<p><strong>Lý do điều chỉnh:</strong> ${escapeHtml(assignment.adjustmentReason)}</p>` : ""}
+          <p class="workflow-inline-hint">Tạo ${formatDate(assignment.createdAt)}</p>
           <div class="auth-actions">
             <button
               class="secondary-button"
@@ -5203,7 +5325,7 @@ function renderAssignmentsList(assignments: Assignment[]): void {
               type="button"
               data-open-assignment-task-id="${escapeHtml(assignment.taskId)}"
             >
-              Open Task
+              Mở nhiệm vụ
             </button>
           </div>
         </article>
@@ -5239,7 +5361,7 @@ function renderAssignmentQueue(): void {
   if (!isAdminLikeSession()) {
     assignmentQueue.innerHTML = `
       <div class="empty-state">
-        Assignment tools are limited to principal or admin sessions.
+        Chức năng giao việc chỉ dành cho Hiệu trưởng hoặc quản trị viên.
       </div>
     `;
     return;
@@ -5252,7 +5374,7 @@ function renderAssignmentQueue(): void {
   if (waitingItems.length === 0) {
     assignmentQueue.innerHTML = `
       <div class="empty-state">
-        No work items are waiting for assignment.
+        Chưa có hồ sơ nào chờ giao việc.
       </div>
     `;
     return;
@@ -5266,8 +5388,15 @@ function renderAssignmentQueue(): void {
           type="button"
           data-assignment-queue-work-item-id="${escapeHtml(item.workItem.id)}"
         >
-          <strong>${escapeHtml(item.workItem.title)}</strong>
-          <span>${escapeHtml(item.workItem.createdByUserId)}</span>
+          <span class="queue-item-copy">
+            <strong>${escapeHtml(item.workItem.title)}</strong>
+            <span>${escapeHtml(item.workItem.leadDepartmentId ? getDepartmentName(item.workItem.leadDepartmentId) : "Chưa chọn đơn vị")}</span>
+          </span>
+          <span class="queue-item-meta">
+            <span class="status-badge status-${escapeHtml(item.workItem.status)}">
+              ${escapeHtml(getPriorityLabel(item.workItem.routingPriority ?? "normal"))}
+            </span>
+          </span>
         </button>
       `
     )
@@ -5321,14 +5450,14 @@ function renderAssignmentWorkspace(): void {
       <div class="task-card-row">
         <strong>${escapeHtml(selectedItem.workItem.title)}</strong>
         <span class="status-badge status-${escapeHtml(selectedItem.workItem.status)}">
-          ${escapeHtml(selectedItem.workItem.status)}
+          ${escapeHtml(getWorkItemStatusLabel(selectedItem.workItem.status))}
         </span>
       </div>
-      <p><strong>Description:</strong> ${escapeHtml(selectedItem.workItem.description)}</p>
-      <p><strong>Current assignment:</strong> ${escapeHtml(currentAssignment ? currentAssignment.mainDepartmentId : "none")}</p>
-      <p><strong>Priority:</strong> ${escapeHtml(currentAssignment?.priority ?? "not assigned")}</p>
-      <p><strong>Deadline:</strong> ${escapeHtml(currentAssignment?.deadline ?? "—")}</p>
-      <p><strong>Assignment form:</strong> Use the Work Items detail panel to submit or revise the assignment for this record.</p>
+      <p>${escapeHtml(selectedItem.workItem.description)}</p>
+      <p><strong>Đơn vị chủ trì:</strong> ${escapeHtml(currentAssignment ? getDepartmentName(currentAssignment.mainDepartmentId) : "Chưa giao")}</p>
+      <p><strong>Mức ưu tiên:</strong> ${escapeHtml(currentAssignment ? getPriorityLabel(currentAssignment.priority) : "Chưa xác định")}</p>
+      <p><strong>Thời hạn:</strong> ${currentAssignment?.deadline ? new Date(currentAssignment.deadline).toLocaleDateString("vi-VN") : "—"}</p>
+      <p class="workflow-inline-hint">Mở hồ sơ để tạo hoặc chỉnh sửa phiếu giao việc.</p>
       <div class="auth-actions">
         <button class="secondary-button" type="button" data-open-assignment-workspace-item="${escapeHtml(selectedItem.workItem.id)}">
           Mở trong Hồ sơ
@@ -5352,12 +5481,12 @@ function renderApprovalsQueue(): void {
   if (!isAdminLikeSession()) {
     approvalsQueue.innerHTML = `
       <div class="empty-state">
-        Principal review is only available to principal or admin sessions.
+        Chức năng phân luồng chỉ dành cho Hiệu trưởng hoặc quản trị viên.
       </div>
     `;
     approvalsAssignmentList.innerHTML = `
       <div class="empty-state">
-        Principal review is limited to principal or admin sessions.
+        Chức năng phân luồng chỉ dành cho Hiệu trưởng hoặc quản trị viên.
       </div>
     `;
     return;
@@ -5372,7 +5501,7 @@ function renderApprovalsQueue(): void {
   if (waitingItems.length === 0) {
     approvalsQueue.innerHTML = `
       <div class="empty-state">
-        No work items are currently waiting for principal review.
+        Không có hồ sơ nào đang chờ HT xem xét.
       </div>
     `;
   } else {
@@ -5380,12 +5509,19 @@ function renderApprovalsQueue(): void {
       .map(
         (item) => `
           <button
-            class="queue-item-button"
+            class="queue-item-button ${selectedWorkItemId === item.workItem.id ? "is-selected" : ""}"
             type="button"
             data-principal-review-work-item-id="${escapeHtml(item.workItem.id)}"
           >
-            <strong>${escapeHtml(item.workItem.title)}</strong>
-            <span>${escapeHtml(item.workItem.createdByUserId)}</span>
+            <span class="queue-item-copy">
+              <strong>${escapeHtml(item.workItem.title)}</strong>
+              <span>${escapeHtml(item.workItem.intakeCode ?? formatDate(item.workItem.createdAt))}</span>
+            </span>
+            <span class="queue-item-meta">
+              <span class="status-badge status-${escapeHtml(item.workItem.status)}">
+                ${escapeHtml(getWorkItemStatusLabel(item.workItem.status))}
+              </span>
+            </span>
           </button>
         `
       )
@@ -5408,7 +5544,7 @@ function renderPrincipalReviewWorkspace(): void {
   if (!isAdminLikeSession()) {
     approvalsAssignmentList.innerHTML = `
       <div class="empty-state">
-        Principal review is limited to principal or admin sessions.
+        Chức năng phân luồng chỉ dành cho Hiệu trưởng hoặc quản trị viên.
       </div>
     `;
     return;
@@ -5423,11 +5559,7 @@ function renderPrincipalReviewWorkspace(): void {
   const selectedItem = currentWorkItems.find(
     (item) => item.workItem.id === selectedWorkItemId
   );
-  const linkedDocument =
-    currentDocuments.find(
-      (documentItem) =>
-        documentItem.document.createdWorkItemId === selectedWorkItemId
-    ) ?? null;
+  const linkedDocuments = findLinkedDocumentsByWorkItemId(selectedWorkItemId);
 
   if (!selectedItem) {
     approvalsAssignmentList.innerHTML = buildPrincipalWorkflowHtml(null);
@@ -5436,31 +5568,48 @@ function renderPrincipalReviewWorkspace(): void {
   }
 
   const currentDecision = selectedItem.workItem.principalDecision ?? "assign";
+  const aiSummary = selectedItem.latestAnalysis?.summary;
 
   approvalsAssignmentList.innerHTML = `
     <article class="admin-item">
       <div class="task-card-row">
         <strong>${escapeHtml(selectedItem.workItem.title)}</strong>
         <span class="status-badge status-${escapeHtml(selectedItem.workItem.status)}">
-          ${escapeHtml(selectedItem.workItem.status)}
+          ${escapeHtml(getWorkItemStatusLabel(selectedItem.workItem.status))}
         </span>
       </div>
-      <p><strong>Description:</strong> ${escapeHtml(selectedItem.workItem.description)}</p>
-      <p><strong>Source document:</strong> ${escapeHtml(linkedDocument?.document.filename ?? "—")}</p>
-      <p><strong>Latest AI summary:</strong> ${escapeHtml(selectedItem.latestAnalysis?.summary ?? "No AI summary saved yet")}</p>
-      <div class="admin-item-grid">
+      ${selectedItem.workItem.intakeCode ? `<p class="workflow-inline-hint">Mã tiếp nhận: <strong>${escapeHtml(selectedItem.workItem.intakeCode)}</strong></p>` : ""}
+      <p>${escapeHtml(selectedItem.workItem.description)}</p>
+      ${
+        linkedDocuments.length > 0
+          ? `<p class="workflow-inline-hint">Văn bản gốc: <strong>${escapeHtml(
+              linkedDocuments.map((item) => item.document.filename).join(", ")
+            )}</strong></p>`
+          : ""
+      }
+      ${
+        aiSummary
+          ? `<div class="workflow-attention-card" style="margin-top:0.75rem;">
+               <div>
+                 <p class="eyebrow">Phân tích AI</p>
+                 <p>${escapeHtml(aiSummary)}</p>
+               </div>
+             </div>`
+          : `<p class="workflow-inline-hint" style="font-style:italic;">Chưa có phân tích AI cho hồ sơ này.</p>`
+      }
+      <div class="admin-item-grid" style="margin-top:1rem;">
         <div class="field">
-          <label for="principal-decision">Principal decision</label>
+          <label for="principal-decision">Hướng xử lý</label>
           <select id="principal-decision">
-            <option value="assign" ${currentDecision === "assign" ? "selected" : ""}>Prepare for assignment</option>
-            <option value="return_intake" ${currentDecision === "return_intake" ? "selected" : ""}>Return for intake completion</option>
-            <option value="hold" ${currentDecision === "hold" ? "selected" : ""}>Put on hold</option>
+            <option value="assign" ${currentDecision === "assign" ? "selected" : ""}>Chuẩn bị giao việc</option>
+            <option value="return_intake" ${currentDecision === "return_intake" ? "selected" : ""}>Trả về để hoàn thiện tiếp nhận</option>
+            <option value="hold" ${currentDecision === "hold" ? "selected" : ""}>Tạm giữ</option>
           </select>
         </div>
         <div class="field">
-          <label for="principal-lead-department">Lead department</label>
+          <label for="principal-lead-department">Đơn vị chủ trì</label>
           <select id="principal-lead-department">
-            <option value="">Choose department</option>
+            <option value="">-- Chọn đơn vị --</option>
             ${currentDepartments
               .map(
                 (department) => `
@@ -5476,36 +5625,36 @@ function renderPrincipalReviewWorkspace(): void {
           </select>
         </div>
         <div class="field">
-          <label for="principal-coordinating-departments">Coordinating departments</label>
+          <label for="principal-coordinating-departments">Đơn vị phối hợp</label>
           <input
             id="principal-coordinating-departments"
             type="text"
-            value="${escapeHtml(selectedItem.workItem.coordinatingDepartmentIds.join(", "))}"
-            placeholder="dept_admin, dept_academic"
+            value="${escapeHtml(selectedItem.workItem.coordinatingDepartmentIds.map(getDepartmentName).join(", "))}"
+            placeholder="Tên hoặc mã đơn vị, cách nhau bằng dấu phẩy"
           />
         </div>
         <div class="field">
-          <label for="principal-priority">Priority</label>
+          <label for="principal-priority">Mức độ ưu tiên</label>
           <select id="principal-priority">
             ${renderAssignmentPriorityOptions(selectedItem.workItem.routingPriority ?? "normal")}
           </select>
         </div>
         <div class="form-row-2col">
           <div class="field">
-            <label for="principal-output-type">Loại đầu ra (Output type)</label>
+            <label for="principal-output-type">Loại đầu ra</label>
             <select id="principal-output-type">
               <option value="" ${!selectedItem.workItem.outputType ? "selected" : ""}>-- Chọn loại đầu ra --</option>
-              <option value="report" ${selectedItem.workItem.outputType === "report" ? "selected" : ""}>Báo cáo (Report)</option>
-              <option value="plan_document" ${selectedItem.workItem.outputType === "plan_document" ? "selected" : ""}>Văn bản kế hoạch (Plan document)</option>
-              <option value="minutes" ${selectedItem.workItem.outputType === "minutes" ? "selected" : ""}>Biên bản (Minutes)</option>
-              <option value="list" ${selectedItem.workItem.outputType === "list" ? "selected" : ""}>Danh sách (List)</option>
-              <option value="proposal" ${selectedItem.workItem.outputType === "proposal" ? "selected" : ""}>Đề xuất (Proposal)</option>
-              <option value="evidence_files" ${selectedItem.workItem.outputType === "evidence_files" ? "selected" : ""}>Hồ sơ minh chứng (Evidence files)</option>
-              <option value="other" ${selectedItem.workItem.outputType === "other" ? "selected" : ""}>Khác (Other)</option>
+              <option value="report" ${selectedItem.workItem.outputType === "report" ? "selected" : ""}>Báo cáo</option>
+              <option value="plan_document" ${selectedItem.workItem.outputType === "plan_document" ? "selected" : ""}>Văn bản kế hoạch</option>
+              <option value="minutes" ${selectedItem.workItem.outputType === "minutes" ? "selected" : ""}>Biên bản</option>
+              <option value="list" ${selectedItem.workItem.outputType === "list" ? "selected" : ""}>Danh sách</option>
+              <option value="proposal" ${selectedItem.workItem.outputType === "proposal" ? "selected" : ""}>Đề xuất</option>
+              <option value="evidence_files" ${selectedItem.workItem.outputType === "evidence_files" ? "selected" : ""}>Hồ sơ minh chứng</option>
+              <option value="other" ${selectedItem.workItem.outputType === "other" ? "selected" : ""}>Khác</option>
             </select>
           </div>
           <div class="field">
-            <label for="principal-deadline">Thời hạn (Deadline)</label>
+            <label for="principal-deadline">Thời hạn hoàn thành</label>
             <input
               id="principal-deadline"
               type="datetime-local"
@@ -5514,21 +5663,21 @@ function renderPrincipalReviewWorkspace(): void {
           </div>
         </div>
         <div class="field">
-          <label for="principal-output-requirement">Yêu cầu đầu ra (Output requirement)</label>
+          <label for="principal-output-requirement">Yêu cầu kết quả đầu ra</label>
           <textarea id="principal-output-requirement" rows="2" placeholder="Mô tả chi tiết yêu cầu kết quả">${escapeHtml(
             selectedItem.workItem.outputRequirement ?? ""
           )}</textarea>
         </div>
         <div class="field">
-          <label for="principal-note">Ghi chú chỉ đạo (Principal note)</label>
-          <textarea id="principal-note" rows="2" placeholder="Chỉ đạo điều phối hoặc ghi chú tiếp nhận">${escapeHtml(
+          <label for="principal-note">Ghi chú chỉ đạo của HT</label>
+          <textarea id="principal-note" rows="2" placeholder="Chỉ đạo điều phối hoặc lưu ý tiếp nhận">${escapeHtml(
             selectedItem.workItem.principalNote ?? ""
           )}</textarea>
         </div>
       </div>
       <div class="auth-actions">
         <button id="save-principal-review-button" class="primary-button" type="button">
-          Save Routing Decision
+          Lưu quyết định phân luồng
         </button>
         <button id="open-principal-review-work-item-button" class="secondary-button" type="button">
           Mở hồ sơ
@@ -5537,7 +5686,7 @@ function renderPrincipalReviewWorkspace(): void {
           selectedItem.workItem.status === "waiting_assignment"
             ? `
               <button id="go-to-assignment-queue-button" class="secondary-button" type="button">
-                Open Assignment Step
+                Chuyển đến bước giao việc ↓
               </button>
             `
             : ""
@@ -5614,17 +5763,17 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
           .map(
             (item) => `
               <button
-                class="queue-item-button queue-item-button-compact"
+                class="queue-item-button queue-item-button-compact ${assignmentFocusItem?.workItem.id === item.workItem.id ? "is-selected" : ""}"
                 type="button"
                 data-workflow-assignment-work-item-id="${escapeHtml(item.workItem.id)}"
               >
                 <span class="queue-item-copy">
                   <strong>${escapeHtml(item.workItem.title)}</strong>
-                  <span>${escapeHtml(getNextWorkItemAction(item.workItem.status))}</span>
+                  <span>${escapeHtml(item.workItem.leadDepartmentId ? getDepartmentName(item.workItem.leadDepartmentId) : "Chưa chọn đơn vị")}</span>
                 </span>
                 <span class="queue-item-meta">
                   <span class="status-badge status-${escapeHtml(item.workItem.status)}">
-                    ${escapeHtml(item.workItem.routingPriority ?? "normal")}
+                    ${escapeHtml(getPriorityLabel(item.workItem.routingPriority ?? "normal"))}
                   </span>
                 </span>
               </button>
@@ -5633,9 +5782,13 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
           .join("")
       : `
           <div class="empty-state">
-            No work items are waiting for formal assignment.
+            Chưa có hồ sơ nào chờ giao việc chính thức.
           </div>
         `;
+
+  const assignmentFocusLeadDepartmentName = assignmentFocusItem?.workItem.leadDepartmentId
+    ? getDepartmentName(assignmentFocusItem.workItem.leadDepartmentId)
+    : assignmentFocusLeadDepartment;
 
   const assignmentFocusHtml = assignmentFocusItem
     ? `
@@ -5648,19 +5801,19 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
               </p>
             </div>
             <span class="status-badge status-${escapeHtml(assignmentFocusItem.workItem.status)}">
-              ${escapeHtml(assignmentFocusItem.workItem.status)}
+              ${escapeHtml(getWorkItemStatusLabel(assignmentFocusItem.workItem.status))}
             </span>
           </div>
           <div class="handoff-focus-grid">
-            <p><strong>Lead department:</strong> ${escapeHtml(assignmentFocusLeadDepartment)}</p>
-            <p><strong>Priority:</strong> ${escapeHtml(
-              assignmentFocusItem.workItem.routingPriority ?? "normal"
+            <p><strong>Đơn vị chủ trì:</strong> ${escapeHtml(assignmentFocusLeadDepartmentName)}</p>
+            <p><strong>Mức ưu tiên:</strong> ${escapeHtml(getPriorityLabel(assignmentFocusItem.workItem.routingPriority ?? "normal"))}</p>
+            <p><strong>Yêu cầu kết quả:</strong> ${escapeHtml(
+              assignmentFocusItem.workItem.outputRequirement ?? "Chưa có yêu cầu cụ thể"
             )}</p>
-            <p><strong>Output requirement:</strong> ${escapeHtml(
-              assignmentFocusItem.workItem.outputRequirement ?? "not specified"
-            )}</p>
-            <p><strong>Current assignment:</strong> ${escapeHtml(
-              assignmentFocusRecord?.mainDepartmentId ?? "not created yet"
+            <p><strong>Phiếu giao:</strong> ${escapeHtml(
+              assignmentFocusRecord
+                ? getDepartmentName(assignmentFocusRecord.mainDepartmentId)
+                : "Chưa tạo phiếu giao"
             )}</p>
           </div>
           <div class="auth-actions compact-action-bar">
@@ -5669,7 +5822,7 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
               type="button"
               data-workflow-open-record-id="${escapeHtml(assignmentFocusItem.workItem.id)}"
             >
-              Open Record Workspace
+              Mở không gian hồ sơ
             </button>
             ${
               assignmentFocusRecord
@@ -5679,12 +5832,12 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
                       type="button"
                       data-workflow-open-task-id="${escapeHtml(assignmentFocusRecord.taskId)}"
                     >
-                      Open Department Task
+                      Mở nhiệm vụ đơn vị
                     </button>
                   `
                 : `
                     <span class="workflow-mini-note">
-                      Dispatch the assignment in this workspace to create the department task.
+                      Giao việc trong không gian hồ sơ để tạo nhiệm vụ cho đơn vị.
                     </span>
                   `
             }
@@ -5702,35 +5855,38 @@ function buildPrincipalWorkflowHtml(selectedItem: WorkItemListItem | null): stri
       ? currentAssignments
           .slice(0, 6)
           .map(
-            (assignment) => `
+            (assignment) => {
+              const linkedWorkItem = currentWorkItems.find(
+                (item) => item.workItem.id === assignment.workItemId
+              );
+              return `
               <article class="admin-item">
                 <div class="task-card-row">
-                  <strong>${escapeHtml(assignment.workItemId)}</strong>
-                  <span class="status-badge status-running">${escapeHtml(assignment.status)}</span>
+                  <strong>${escapeHtml(linkedWorkItem?.workItem.title ?? assignment.workItemId)}</strong>
+                  <span class="status-badge status-${escapeHtml(assignment.status)}">${escapeHtml(getAssignmentStatusLabel(assignment.status))}</span>
                 </div>
-                <p><strong>Main Department:</strong> ${escapeHtml(assignment.mainDepartmentId)}</p>
-                <p><strong>Deadline:</strong> ${escapeHtml(assignment.deadline ?? "—")}</p>
-                <p><strong>Adjustment Reason:</strong> ${escapeHtml(
-                  assignment.adjustmentReason ?? "none"
-                )}</p>
+                <p><strong>Đơn vị chủ trì:</strong> ${escapeHtml(getDepartmentName(assignment.mainDepartmentId))}</p>
+                <p><strong>Thời hạn:</strong> ${assignment.deadline ? new Date(assignment.deadline).toLocaleDateString("vi-VN") : "—"}</p>
+                ${assignment.adjustmentReason ? `<p><strong>Lý do điều chỉnh:</strong> ${escapeHtml(assignment.adjustmentReason)}</p>` : ""}
                 <div class="auth-actions">
                   <button
                     class="secondary-button"
                     type="button"
                     data-workflow-open-record-id="${escapeHtml(assignment.workItemId)}"
                   >
-                    Open Record
+                    Mở hồ sơ
                   </button>
                   <button
                     class="secondary-button"
                     type="button"
                     data-workflow-open-task-id="${escapeHtml(assignment.taskId)}"
                   >
-                    Open Task
+                    Mở nhiệm vụ
                   </button>
                 </div>
               </article>
-            `
+            `;
+            }
           )
           .join("")
       : `
@@ -5827,6 +5983,7 @@ function bindPrincipalWorkflowInteractions(): void {
 }
 
 function renderOverview(): void {
+  renderNavBadges();
   const now = Date.now();
   const documentCount = currentDocuments.length;
   const activeDepartmentTasks = currentTaskItems.filter(
@@ -5860,14 +6017,14 @@ function renderOverview(): void {
   ).length;
 
   overviewCards.innerHTML = [
-    { label: "G1 – Chờ tiếp nhận", value: String(documentCount), alert: false },
-    { label: "G2 – Chờ HT xem xét", value: String(waitingCount), alert: waitingCount > 0 },
-    { label: "G3 – Chờ giao việc", value: String(assignedCount), alert: false },
-    { label: "G4 – Đang thực hiện", value: String(inProgressCount), alert: false },
-    { label: "G5 – Quá hạn", value: String(overdueWorkItems), alert: overdueWorkItems > 0 },
-    { label: "G8 – Chờ HT duyệt", value: String(waitingApprovalCount), alert: waitingApprovalCount > 0 },
-    { label: "Đang xử lý tổng", value: String(queueCount), alert: false },
-    { label: "Hoàn thành / Lưu trữ", value: String(completedCount), alert: false }
+    { label: "Văn bản mới", value: String(documentCount), alert: false },
+    { label: "Chờ HT phân luồng", value: String(waitingCount), alert: waitingCount > 0 },
+    { label: "Đang giao việc", value: String(assignedCount), alert: false },
+    { label: "Đang thực hiện", value: String(inProgressCount), alert: false },
+    { label: "Quá hạn", value: String(overdueWorkItems), alert: overdueWorkItems > 0 },
+    { label: "Chờ HT phê duyệt", value: String(waitingApprovalCount), alert: waitingApprovalCount > 0 },
+    { label: "Tổng nhiệm vụ đang mở", value: String(queueCount), alert: false },
+    { label: "Hoàn thành & Lưu trữ", value: String(completedCount), alert: false }
   ]
     .map(
       (card) => `
@@ -6236,8 +6393,8 @@ async function loadAndRenderDailyReport(): Promise<void> {
               <tr>
                 <td>${escapeHtml(row.departmentName)}</td>
                 <td>${row.total}</td>
-                <td style="color:${row.overdue > 0 ? "#cf222e" : "inherit"}">${row.overdue}</td>
-                <td style="color:#1a7f37">${row.completed}</td>
+                <td style="color:${row.overdue > 0 ? "#dc2626" : "inherit"}">${row.overdue}</td>
+                <td style="color:#16a34a">${row.completed}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -6325,8 +6482,8 @@ async function loadAndRenderWeeklyReport(): Promise<void> {
               <tr>
                 <td>${escapeHtml(row.departmentName)}</td>
                 <td>${row.total}</td>
-                <td style="color:${row.overdue > 0 ? "#cf222e" : "inherit"}">${row.overdue}</td>
-                <td style="color:#1a7f37">${row.completed}</td>
+                <td style="color:${row.overdue > 0 ? "#dc2626" : "inherit"}">${row.overdue}</td>
+                <td style="color:#16a34a">${row.completed}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -6429,7 +6586,7 @@ async function selectWorkItemById(workItemId: string | null): Promise<void> {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while loading the work item.",
+        : "Có lỗi xảy ra khi tải hồ sơ công việc.",
       "error"
     );
   }
@@ -6456,30 +6613,28 @@ async function openWorkItemWithTab(
 
 function renderWorkItemDetail(item: WorkItemListItem): void {
   const currentAssignment = currentWorkItemAssignments[0] ?? null;
-  const linkedDocument =
-    currentDocuments.find(
-      (documentItem) => documentItem.document.createdWorkItemId === item.workItem.id
-    ) ?? null;
+  const linkedDocuments = findLinkedDocumentsByWorkItemId(item.workItem.id);
+  const linkedDocument = linkedDocuments[0] ?? null;
   workItemDetail.classList.add("hidden");
   workItemDetailTitle.textContent = item.workItem.title;
   workItemDetailMeta.textContent = [
-    `Status: ${item.workItem.status}`,
-    `Created: ${formatDate(item.workItem.createdAt)}`,
-    `Updated: ${formatDate(item.workItem.updatedAt)}`
+    `Trạng thái: ${getWorkItemStatusLabel(item.workItem.status)}`,
+    `Tạo lúc: ${formatDate(item.workItem.createdAt)}`,
+    `Cập nhật: ${formatDate(item.workItem.updatedAt)}`
   ].join(" | ");
   workItemModalTitle.textContent = item.workItem.title;
   workItemModalMeta.textContent = workItemDetailMeta.textContent;
   workItemModalBody.innerHTML = `
     <div class="detail-tabs">
-      <button class="tab-button is-active" type="button" data-detail-tab="info">Info</button>
-      <button class="tab-button" type="button" data-detail-tab="files">Files</button>
-      <button class="tab-button" type="button" data-detail-tab="analysis">AI Analysis</button>
-      <button class="tab-button" type="button" data-detail-tab="assignment">Assignment</button>
-      <button class="tab-button" type="button" data-detail-tab="history">History</button>
+      <button class="tab-button is-active" type="button" data-detail-tab="info">Thông tin</button>
+      <button class="tab-button" type="button" data-detail-tab="files">Tệp đính kèm</button>
+      <button class="tab-button" type="button" data-detail-tab="analysis">Phân tích AI</button>
+      <button class="tab-button" type="button" data-detail-tab="assignment">Giao việc</button>
+      <button class="tab-button" type="button" data-detail-tab="history">Lịch sử</button>
     </div>
     <div class="task-actions compact-action-bar">
       <label class="field work-item-status-field">
-        <span>Status</span>
+        <span>Trạng thái</span>
         <select id="work-item-status-select">
           ${renderWorkItemStatusOptions(item.workItem.status)}
         </select>
@@ -6489,14 +6644,14 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         class="secondary-button"
         type="button"
       >
-        Save
+        Lưu
       </button>
       <button
         id="trigger-work-item-file-input"
         class="secondary-button"
         type="button"
       >
-        Upload
+        Tải lên
       </button>
       <input id="work-item-file-input" class="visually-hidden-file-input" type="file" multiple />
       <button
@@ -6504,7 +6659,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         class="secondary-button"
         type="button"
       >
-        Analyze
+        Phân tích AI
       </button>
       ${
         !currentAssignment
@@ -6589,29 +6744,41 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         <div>
           <p class="detail-label">Văn bản nguồn</p>
           <div class="detail-value">
-            <p>${escapeHtml(linkedDocument?.document.filename ?? "—")}</p>
             ${
-              linkedDocument?.document.hasFileContent
-                ? `
-                  <div class="auth-actions">
-                    <button
-                      class="secondary-button task-action-button"
-                      type="button"
-                      data-open-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
-                    >
-                      Mở văn bản nguồn
-                    </button>
-                    <button
-                      class="secondary-button task-action-button"
-                      type="button"
-                      data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
-                      data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
-                    >
-                      Tải văn bản nguồn
-                    </button>
-                  </div>
-                `
-                : ""
+              linkedDocuments.length > 0
+                ? linkedDocuments
+                    .map(
+                      (documentItem) => `
+                        <div class="task-card-row">
+                          <span>${escapeHtml(documentItem.document.filename)}</span>
+                          <div class="auth-actions">
+                            <button
+                              class="secondary-button task-action-button"
+                              type="button"
+                              data-open-linked-document-id="${escapeHtml(documentItem.document.id)}"
+                            >
+                              Mở
+                            </button>
+                            ${
+                              documentItem.document.hasFileContent
+                                ? `
+                                  <button
+                                    class="secondary-button task-action-button"
+                                    type="button"
+                                    data-download-linked-document-id="${escapeHtml(documentItem.document.id)}"
+                                    data-download-linked-document-filename="${escapeHtml(documentItem.document.filename)}"
+                                  >
+                                    Tải xuống
+                                  </button>
+                                `
+                                : ""
+                            }
+                          </div>
+                        </div>
+                      `
+                    )
+                    .join("")
+                : "<p>—</p>"
             }
           </div>
         </div>
@@ -6689,27 +6856,38 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
         <p class="detail-label">Files</p>
         <div class="work-item-files">
           ${
-            linkedDocument
-              ? `
-                <div class="work-item-file-chip source-file-chip">
-                  Source: ${escapeHtml(linkedDocument.document.filename)}
-                  ${
-                    linkedDocument.document.hasFileContent
-                      ? `
-                        <button
-                          class="secondary-button task-action-button"
-                          type="button"
-                          data-download-linked-document-id="${escapeHtml(linkedDocument.document.id)}"
-                          data-download-linked-document-filename="${escapeHtml(linkedDocument.document.filename)}"
-                        >
-                          Download
-                        </button>
-                      `
-                      : ""
-                  }
-                </div>
-              `
-              : ""
+            linkedDocuments
+              .map(
+                (documentItem) => `
+                  <div class="work-item-file-chip source-file-chip">
+                    Source: ${escapeHtml(documentItem.document.filename)}
+                    <div class="auth-actions">
+                      <button
+                        class="secondary-button task-action-button"
+                        type="button"
+                        data-open-linked-document-id="${escapeHtml(documentItem.document.id)}"
+                      >
+                        Mở
+                      </button>
+                      ${
+                        documentItem.document.hasFileContent
+                          ? `
+                            <button
+                              class="secondary-button task-action-button"
+                              type="button"
+                              data-download-linked-document-id="${escapeHtml(documentItem.document.id)}"
+                              data-download-linked-document-filename="${escapeHtml(documentItem.document.filename)}"
+                            >
+                              Download
+                            </button>
+                          `
+                          : ""
+                      }
+                    </div>
+                  </div>
+                `
+              )
+              .join("")
           }
           ${
             item.files.length > 0
@@ -6737,7 +6915,7 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                     `
                   )
                   .join("")
-              : linkedDocument
+              : linkedDocuments.length > 0
                 ? '<p class="detail-value">No separate response files uploaded yet. The source document above is the current working attachment.</p>'
                 : '<p class="detail-value">No files uploaded yet.</p>'
           }
@@ -6754,13 +6932,13 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
     </section>
     <section class="tab-panel hidden" data-detail-panel="history">
       <div class="task-output">
-        <p class="detail-label">History</p>
+        <p class="detail-label">Lịch sử</p>
         <div class="detail-value">
-          <p>Created: ${escapeHtml(formatDate(item.workItem.createdAt))}</p>
-          <p>Updated: ${escapeHtml(formatDate(item.workItem.updatedAt))}</p>
-          <p>Status: ${escapeHtml(item.workItem.status)}</p>
-          <p>Files: ${escapeHtml(String(item.files.length))}</p>
-          <p>Analyses: ${escapeHtml(item.latestAnalysis ? "1 latest result" : "0")}</p>
+          <p>Tạo lúc: ${escapeHtml(formatDate(item.workItem.createdAt))}</p>
+          <p>Cập nhật: ${escapeHtml(formatDate(item.workItem.updatedAt))}</p>
+          <p>Trạng thái: ${escapeHtml(getWorkItemStatusLabel(item.workItem.status))}</p>
+          <p>Tệp đính kèm: ${escapeHtml(String(item.files.length))}</p>
+          <p>Phân tích AI: ${escapeHtml(item.latestAnalysis ? "Có kết quả mới nhất" : "Chưa có")}</p>
         </div>
       </div>
     </section>
@@ -6768,12 +6946,12 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
       currentSessionUser?.role === "principal"
         ? `
           <div class="task-output assignment-form-card">
-            <p class="detail-label">Luồng giao việc HT</p>
+            <p class="detail-label">Giao việc – Hiệu trưởng</p>
             <div class="admin-item-grid">
               <div class="field">
-                <label for="assignment-main-department">Main department</label>
+                <label for="assignment-main-department">Đơn vị chủ trì</label>
                 <select id="assignment-main-department">
-                  <option value="">Choose department</option>
+                  <option value="">-- Chọn đơn vị --</option>
                   ${currentDepartments
                     .map(
                       (department) => `
@@ -6786,33 +6964,33 @@ function renderWorkItemDetail(item: WorkItemListItem): void {
                 </select>
               </div>
               <div class="field">
-                <label for="assignment-coordinating-departments">Coordinating departments</label>
+                <label for="assignment-coordinating-departments">Đơn vị phối hợp</label>
                 <input
                   id="assignment-coordinating-departments"
                   type="text"
                   value="${escapeHtml(item.workItem.coordinatingDepartmentIds.join(", "))}"
-                  placeholder="dept_admin, dept_academic"
+                  placeholder="Tên hoặc mã đơn vị, cách nhau bằng dấu phẩy"
                 />
               </div>
               <div class="field">
-                <label for="assignment-deadline">Deadline</label>
+                <label for="assignment-deadline">Thời hạn hoàn thành</label>
                 <input id="assignment-deadline" type="datetime-local" />
               </div>
               <div class="field">
-                <label for="assignment-priority">Priority</label>
+                <label for="assignment-priority">Mức độ ưu tiên</label>
                 <select id="assignment-priority">
                   ${renderAssignmentPriorityOptions(item.workItem.routingPriority ?? "normal")}
                 </select>
               </div>
               <div class="field">
-                <label for="assignment-output-requirement">Output requirement</label>
-                <textarea id="assignment-output-requirement" rows="2" placeholder="Expected report or deliverable">${escapeHtml(
+                <label for="assignment-output-requirement">Yêu cầu kết quả đầu ra</label>
+                <textarea id="assignment-output-requirement" rows="2" placeholder="Mô tả báo cáo hoặc sản phẩm cần nộp">${escapeHtml(
                   item.workItem.outputRequirement ?? ""
                 )}</textarea>
               </div>
               <div class="field">
-                <label for="assignment-note">Note</label>
-                <textarea id="assignment-note" rows="2" placeholder="Assignment note">${escapeHtml(
+                <label for="assignment-note">Ghi chú giao việc</label>
+                <textarea id="assignment-note" rows="2" placeholder="Chỉ đạo hoặc lưu ý cho đơn vị">${escapeHtml(
                   item.workItem.principalNote ?? ""
                 )}</textarea>
               </div>
@@ -7021,7 +7199,7 @@ function renderAssignmentPriorityOptions(
     .map(
       (priority) => `
         <option value="${escapeHtml(priority)}" ${priority === selectedPriority ? "selected" : ""}>
-          ${escapeHtml(priority)}
+          ${escapeHtml(getPriorityLabel(priority))}
         </option>
       `
     )
@@ -7143,12 +7321,12 @@ async function handleSaveWorkItem(workItemId: string): Promise<void> {
 
     await loadWorkItems();
     await selectWorkItemById(workItemId);
-    setStatus("Work item updated successfully.", "success");
+    setStatus("Đã cập nhật hồ sơ thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while updating the work item.",
+        : "Có lỗi xảy ra khi cập nhật hồ sơ.",
       "error"
     );
   }
@@ -7188,7 +7366,7 @@ async function handleAssignWorkItem(workItemId: string): Promise<void> {
   }
 
   if (mainDepartmentInput.value.length === 0) {
-    setStatus("Main department is required for assignment.", "error");
+    setStatus("Vui lòng chọn đơn vị chủ trì để giao việc.", "error");
     return;
   }
 
@@ -7221,12 +7399,12 @@ async function handleAssignWorkItem(workItemId: string): Promise<void> {
     await loadAssignments();
     await loadWorkItems();
     await selectWorkItemById(workItemId);
-    setStatus("Work item assigned successfully.", "success");
+    setStatus("Đã giao việc thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while assigning the work item.",
+        : "Có lỗi khi giao việc cho đơn vị.",
       "error"
     );
   }
@@ -7272,7 +7450,7 @@ async function handlePrincipalReview(workItemId: string): Promise<void> {
     leadDepartmentInput.value.trim().length === 0
   ) {
     setStatus(
-      "Lead department is required when preparing a work item for assignment.",
+      "Vui lòng chọn đơn vị chủ trì trước khi chuẩn bị giao việc.",
       "error"
     );
     return;
@@ -7320,17 +7498,17 @@ async function handlePrincipalReview(workItemId: string): Promise<void> {
     renderAssignmentsList(currentAssignments);
     setStatus(
       decisionInput.value === "assign"
-        ? "Principal decision saved. Work item is ready for assignment."
+        ? "Đã lưu quyết định phân luồng. Hồ sơ sẵn sàng để giao việc."
         : decisionInput.value === "hold"
-          ? "Principal decision saved. Work item is now on hold."
-          : "Principal decision saved. Work item was returned for intake completion.",
+          ? "Đã lưu quyết định phân luồng. Hồ sơ đang được tạm giữ."
+          : "Đã lưu quyết định phân luồng. Hồ sơ được trả về để hoàn thiện tiếp nhận.",
       "success"
     );
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while saving the principal review decision.",
+        : "Có lỗi khi lưu quyết định phân luồng.",
       "error"
     );
   }
@@ -7421,12 +7599,12 @@ async function handleAnalyzeWorkItem(workItemId: string): Promise<void> {
 
     await loadWorkItems();
     await selectWorkItemById(workItemId);
-    setStatus("AI analysis completed.", "success");
+    setStatus("Phân tích AI hoàn thành.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while analyzing the work item.",
+        : "Có lỗi xảy ra khi phân tích hồ sơ.",
       "error"
     );
   }
@@ -7453,12 +7631,12 @@ async function handleAcceptAssignmentTask(taskId: string | null): Promise<void> 
     await loadAssignments();
     await loadNotifications();
     await focusTaskById(taskId);
-    setStatus("Assignment accepted.", "success");
+    setStatus("Đã tiếp nhận phiếu giao việc.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while accepting the assignment.",
+        : "Có lỗi xảy ra khi tiếp nhận phiếu giao.",
       "error"
     );
   }
@@ -7475,22 +7653,22 @@ function getAssignmentStatusForTask(assignmentId: string | undefined): string {
 
 function getNextTaskAction(task: Task): string {
   if (task.status === "pending") {
-    return "Accept the assignment or request an adjustment.";
+    return "Tiếp nhận phiếu giao hoặc yêu cầu điều chỉnh.";
   }
 
   if (task.status === "running") {
-    return "Open the task, upload evidence, then mark the response submitted.";
+    return "Mở nhiệm vụ, tải minh chứng lên, rồi đánh dấu đã nộp kết quả.";
   }
 
   if (task.status === "completed") {
-    return "Wait for principal confirmation or archive review.";
+    return "Chờ HT xác nhận hoặc lưu trữ hồ sơ.";
   }
 
   if (task.status === "failed") {
-    return "Open the task detail to review the blocker and decide the next move.";
+    return "Mở chi tiết nhiệm vụ để xem vướng mắc và quyết định bước tiếp theo.";
   }
 
-  return "Open the task detail to continue execution.";
+  return "Mở chi tiết nhiệm vụ để tiếp tục thực hiện.";
 }
 
 function getTaskStatusLabel(status: string): string {
@@ -7524,32 +7702,59 @@ function getWorkItemStatusLabel(status: WorkItemStatus): string {
   return labels[status] ?? status;
 }
 
+function getPriorityLabel(priority: string): string {
+  const labels: Record<string, string> = {
+    low: "Thấp",
+    normal: "Thường",
+    high: "Cao",
+    urgent: "Khẩn"
+  };
+  return labels[priority] ?? priority;
+}
+
+function getAssignmentStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    draft: "Nháp",
+    sent: "Đã gửi",
+    waiting_acceptance: "Chờ tiếp nhận",
+    accepted: "Đã tiếp nhận",
+    adjustment_requested: "Yêu cầu điều chỉnh",
+    overdue: "Quá hạn",
+    closed: "Đã đóng"
+  };
+  return labels[status] ?? status;
+}
+
+function getDepartmentName(departmentId: string): string {
+  return currentDepartments.find((d) => d.id === departmentId)?.name ?? departmentId;
+}
+
 function getNextWorkItemAction(status: WorkItemStatus): string {
   switch (status) {
     case "draft":
-      return "Analyze the intake and convert it into a routed record.";
+      return "Phân tích và chuyển hồ sơ tiếp nhận sang trạng thái chờ xem xét.";
     case "waiting_review":
-      return "Principal should review and choose the routing direction.";
+      return "HT xem xét và chọn hướng xử lý.";
     case "waiting_assignment":
-      return "Prepare and dispatch the assignment handoff.";
+      return "Chuẩn bị và gửi phiếu giao việc cho đơn vị.";
     case "assigned":
-      return "Monitor department acceptance and linked task progress.";
+      return "Theo dõi tiếp nhận của đơn vị và tiến độ nhiệm vụ.";
     case "in_review":
-      return "Check the submitted response and decide whether to approve it.";
+      return "Kiểm tra kết quả đơn vị nộp và quyết định phê duyệt.";
     case "needs_supplement":
-      return "Request missing files or evidence from the department.";
+      return "Yêu cầu đơn vị bổ sung hồ sơ hoặc minh chứng còn thiếu.";
     case "needs_rework":
-      return "Return the record for content revision.";
+      return "Trả hồ sơ về đơn vị để chỉnh sửa nội dung.";
     case "late_explanation_required":
-      return "Collect the late explanation before approval.";
+      return "Thu thập giải trình trễ hạn trước khi phê duyệt.";
     case "waiting_principal_approval":
-      return "Principal approval is the next required action.";
+      return "HT phê duyệt là bước tiếp theo bắt buộc.";
     case "completed":
-      return "This record is complete and ready for reporting or archive.";
+      return "Hồ sơ hoàn thành, sẵn sàng báo cáo hoặc lưu trữ.";
     case "archived":
-      return "Archived for lookup only.";
+      return "Đã lưu trữ, chỉ dùng để tra cứu.";
     default:
-      return "Open the record to continue the workflow.";
+      return "Mở hồ sơ để tiếp tục quy trình.";
   }
 }
 
@@ -7559,7 +7764,7 @@ async function handleRejectAssignmentTask(taskId: string | null): Promise<void> 
   }
 
   const reason = window.prompt(
-    "Explain why this assignment needs adjustment before the principal re-routes it:",
+    "Giải thích lý do phiếu giao cần điều chỉnh trước khi HT xem lại:",
     ""
   );
 
@@ -7588,12 +7793,12 @@ async function handleRejectAssignmentTask(taskId: string | null): Promise<void> 
     await loadAssignments();
     await loadNotifications();
     hideDepartmentTaskDetail();
-    setStatus("Adjustment request sent back to the principal review flow.", "success");
+    setStatus("Đã gửi yêu cầu điều chỉnh về luồng xem xét của HT.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while rejecting the assignment.",
+        : "Có lỗi xảy ra khi yêu cầu điều chỉnh phiếu giao.",
       "error"
     );
   }
@@ -7623,12 +7828,12 @@ async function handleSubmitTaskResponse(taskId: string | null): Promise<void> {
     await loadWorkItems();
     await loadNotifications();
     await focusTaskById(taskId);
-    setStatus("Response submitted. Waiting for principal approval before completion.", "success");
+    setStatus("Đã nộp kết quả. Chờ HT phê duyệt trước khi hoàn thành.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while submitting the response.",
+        : "Có lỗi xảy ra khi nộp kết quả.",
       "error"
     );
   }
@@ -7658,12 +7863,12 @@ async function handleApproveTaskResponse(taskId: string | null): Promise<void> {
     await loadWorkItems();
     await loadNotifications();
     await focusTaskById(taskId);
-    setStatus("Response approved. Task is now completed.", "success");
+    setStatus("Đã phê duyệt kết quả. Nhiệm vụ hoàn thành.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while approving the response.",
+        : "Có lỗi xảy ra khi phê duyệt kết quả.",
       "error"
     );
   }
@@ -7671,13 +7876,13 @@ async function handleApproveTaskResponse(taskId: string | null): Promise<void> {
 
 async function handleCancelAssignment(assignmentId: string | null): Promise<void> {
   if (!assignmentId) {
-    setStatus("No assignment is linked to this record.", "error");
+    setStatus("Không có phiếu giao nào được liên kết với hồ sơ này.", "error");
     return;
   }
 
   if (
     !window.confirm(
-      "Cancel this assignment only if it was created by mistake and the department has not started execution. The work item will go back to waiting assignment."
+      "Chỉ hủy phiếu giao nếu được tạo nhầm và đơn vị chưa bắt đầu thực hiện. Hồ sơ sẽ quay về trạng thái chờ giao việc."
     )
   ) {
     return;
@@ -7704,12 +7909,12 @@ async function handleCancelAssignment(assignmentId: string | null): Promise<void
       loadWorkItems(),
       loadNotifications()
     ]);
-    setStatus("Assignment cancelled. The record is back in waiting assignment.", "success");
+    setStatus("Đã hủy phiếu giao. Hồ sơ quay về chờ giao việc.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while cancelling the assignment.",
+        : "Có lỗi xảy ra khi hủy phiếu giao.",
       "error"
     );
   }
@@ -7904,7 +8109,7 @@ async function handleCreateTaskUpdate(taskId: string | null): Promise<void> {
     progressValue < 0 ||
     progressValue > 100
   ) {
-    setStatus("Progress percent must be between 0 and 100.", "error");
+    setStatus("Tiến độ phải là số từ 0 đến 100.", "error");
     return;
   }
 
@@ -7933,12 +8138,12 @@ async function handleCreateTaskUpdate(taskId: string | null): Promise<void> {
     await loadTasks();
     await loadNotifications();
     await focusTaskById(taskId);
-    setStatus("Execution update saved.", "success");
+    setStatus("Đã lưu cập nhật tiến độ thực hiện.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while saving the execution update.",
+        : "Có lỗi xảy ra khi lưu cập nhật tiến độ.",
       "error"
     );
   }
@@ -7993,12 +8198,12 @@ async function handleCreateSubmissionReview(taskId: string | null): Promise<void
     await loadWorkItems();
     await loadNotifications();
     await focusTaskById(taskId);
-    setStatus("Submission review saved.", "success");
+    setStatus("Đã lưu đánh giá kết quả nộp.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while saving the submission review.",
+        : "Có lỗi xảy ra khi lưu đánh giá.",
       "error"
     );
   }
@@ -8039,12 +8244,12 @@ async function handleSaveDepartment(departmentId: string | null): Promise<void> 
     }
 
     await loadAdminData();
-    setStatus("Department updated successfully.", "success");
+    setStatus("Đã cập nhật đơn vị thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while updating the department.",
+        : "Có lỗi xảy ra khi cập nhật đơn vị.",
       "error"
     );
   }
@@ -8068,12 +8273,12 @@ async function handleDeleteDepartment(departmentId: string | null): Promise<void
     }
 
     await loadAdminData();
-    setStatus("Department deleted successfully.", "success");
+    setStatus("Đã xóa đơn vị thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while deleting the department.",
+        : "Có lỗi xảy ra khi xóa đơn vị.",
       "error"
     );
   }
@@ -8122,12 +8327,12 @@ async function handleSaveUserAssignment(userId: string | null): Promise<void> {
     }
 
     await loadAdminData();
-    setStatus("User assignment updated successfully.", "success");
+    setStatus("Đã cập nhật phân công người dùng thành công.", "success");
   } catch (error: unknown) {
     setStatus(
       error instanceof Error
         ? error.message
-        : "Something went wrong while updating the user assignment.",
+        : "Có lỗi xảy ra khi cập nhật phân công người dùng.",
       "error"
     );
   }
@@ -8235,271 +8440,51 @@ function renderCurrentView(): void {
   if (currentView === "account") {
     viewDescription.textContent =
       currentSessionUser?.role && currentSessionUser?.departmentName
-        ? `${meta.description} Current role: ${currentSessionUser.role}. Department: ${currentSessionUser.departmentName}.`
+        ? `${meta.description} Vai trò: ${currentSessionUser.role}. Đơn vị: ${currentSessionUser.departmentName}.`
         : meta.description;
   }
 
-  renderWorkflowChrome();
+  renderNavBadges();
+  renderTopbarUser();
 }
 
-function renderWorkflowChrome(): void {
-  const workflowSteps: Array<{
-    key: "documents" | "approvals" | "department-tasks" | "work-items" | "reports";
-    label: string;
-    title: string;
-  }> = [
-    { key: "documents", label: "G1", title: "Tiếp nhận" },
-    { key: "approvals", label: "G2-3", title: "HT phân luồng" },
-    { key: "department-tasks", label: "G4", title: "Thực hiện" },
-    { key: "work-items", label: "G6-8", title: "Báo cáo & Duyệt" },
-    { key: "reports", label: "G9", title: "Theo dõi & Lưu trữ" }
-  ];
+function renderNavBadges(): void {
+  const pendingIntake = currentDocuments.filter(
+    (d) => !d.document.createdWorkItemId
+  ).length;
 
-  workflowStepper.innerHTML = workflowSteps
-    .map((step) => {
-      const isActive =
-        currentView === step.key ||
-        (step.key === "approvals" && currentView === "assignments");
-      const isComplete =
-        (step.key === "documents" && currentDocuments.length > 0) ||
-        (step.key === "approvals" &&
-          currentWorkItems.some(
-            (item) =>
-              item.workItem.status === "waiting_assignment" ||
-              item.workItem.status === "assigned" ||
-              item.workItem.status === "in_review" ||
-              item.workItem.status === "completed"
-          )) ||
-        (step.key === "department-tasks" &&
-          currentTaskItems.some((item) => item.task.taskType === "school_workflow")) ||
-        (step.key === "work-items" && currentWorkItems.length > 0);
+  const pendingApprovals = currentWorkItems.filter(
+    (item) =>
+      item.workItem.status === "waiting_review" ||
+      item.workItem.status === "waiting_assignment"
+  ).length;
 
-      return `
-        <button
-          class="workflow-step ${isActive ? "is-active" : ""} ${isComplete ? "is-complete" : ""}"
-          type="button"
-          data-workflow-view="${escapeHtml(step.key)}"
-        >
-          <span class="workflow-step-index">${escapeHtml(step.label)}</span>
-          <strong>${escapeHtml(step.title)}</strong>
-        </button>
-      `;
-    })
-    .join("");
+  const pendingTasks = currentTaskItems.filter(
+    (item) => item.task.status === "pending"
+  ).length;
 
-  workflowStepper
-    .querySelectorAll<HTMLButtonElement>("[data-workflow-view]")
-    .forEach((button) => {
-      button.addEventListener("click", () => {
-        const nextView = button.dataset.workflowView as typeof currentView | undefined;
-        if (!nextView) {
-          return;
-        }
-        currentView = nextView;
-        renderCurrentView();
-      });
-    });
+  function setBadge(id: string, count: number): void {
+    const el = document.querySelector<HTMLSpanElement>(`#nav-badge-${id}`);
+    if (!el) return;
+    el.textContent = count > 99 ? "99+" : String(count);
+    el.classList.toggle("hidden", count === 0);
+  }
 
-  const actionsByView: Record<
-    typeof currentView,
-    Array<{ title: string; detail: string; targetView?: typeof currentView; kind?: "primary" | "secondary" }>
-  > = {
-    overview: [
-      {
-        title: "Bắt đầu với tiếp nhận văn bản mới",
-        detail: "Mở Giai đoạn 1, xem tóm tắt AI, rồi tạo hồ sơ chuyển cho HT xem xét.",
-        targetView: "documents",
-        kind: "primary"
-      },
-      {
-        title: "Xử lý quyết định phân luồng của HT",
-        detail: "Phân luồng hồ sơ và tạo phiếu giao việc ngay trong cùng không gian làm việc.",
-        targetView: "approvals"
-      },
-      {
-        title: "Kiểm tra tiến độ thực hiện tại đơn vị",
-        detail: "Mở nhiệm vụ đang chạy, xem vướng mắc và theo dõi báo cáo còn thiếu.",
-        targetView: "department-tasks"
-      }
-    ],
-    documents: [
-      {
-        title: "1. Tải lên hoặc xem văn bản nguồn",
-        detail: "Dùng văn bản OCR/trích xuất làm xem trước tiếp nhận để hồ sơ được tạo có ngữ cảnh đầy đủ.",
-        kind: "primary"
-      },
-      {
-        title: "2. Phân tích văn bản",
-        detail: "Chạy AI phân tích trước khi tạo hồ sơ nếu tóm tắt vẫn chưa rõ ràng."
-      },
-      {
-        title: "3. Tạo hồ sơ công việc",
-        detail: "Khi tiếp nhận xong, chuyển văn bản thành hồ sơ để HT xem xét phân luồng.",
-        targetView: "approvals"
-      }
-    ],
-    approvals: [
-      {
-        title: "1. Chọn hướng xử lý",
-        detail: "Quyết định hồ sơ đi tiếp, trả lại bổ sung hay tạm giữ — ghi rõ lý do.",
-        kind: "primary"
-      },
-      {
-        title: "2. Đặt đơn vị chủ trì, mức độ ưu tiên và thời hạn",
-        detail: "Toàn bộ quyết định phân luồng và chuẩn bị giao việc thực hiện trong cùng không gian này."
-      },
-      {
-        title: "3. Giao việc cho đơn vị",
-        detail: "Sau khi lưu quyết định HT, cuộn xuống phần Giao việc và theo dõi tiến độ tiếp nhận.",
-        targetView: "department-tasks"
-      }
-    ],
-    "department-tasks": [
-      {
-        title: "1. Tiếp nhận hoặc yêu cầu điều chỉnh",
-        detail: "Nhiệm vụ đang chờ không được để im. Xác nhận tiếp nhận hoặc trả lại kèm lý do.",
-        kind: "primary"
-      },
-      {
-        title: "2. Cập nhật tiến độ và đính kèm minh chứng",
-        detail: "Dùng chức năng tải file minh chứng, kiểm tra đính kèm ngay trong nhiệm vụ đang mở."
-      },
-      {
-        title: "3. Nộp báo cáo kết quả (Giai đoạn 6)",
-        detail: "Nộp báo cáo chuyển hồ sơ sang chờ HT phê duyệt — chưa hoàn thành cho đến khi HT duyệt."
-      }
-    ],
-    "work-items": [
-      {
-        title: "1. Xem hồ sơ đầy đủ",
-        detail: "Dùng màn hình này để xem file nguồn, trạng thái giao việc, lịch sử xét duyệt và hành động phê duyệt cuối.",
-        kind: "primary"
-      },
-      {
-        title: "2. Kiểm tra file và tab giao việc",
-        detail: "Nếu đơn vị đã nộp báo cáo, kiểm tra đính kèm và mở nhiệm vụ liên kết khi cần."
-      },
-      {
-        title: "3. Phê duyệt và lưu trữ",
-        detail: "HT phê duyệt khi hồ sơ đã hoàn thành, sau đó lưu trữ vào kho (Giai đoạn 9)."
-      }
-    ],
-    assignments: [
-      {
-        title: "Giao việc đã tích hợp vào Phân luồng HT",
-        detail: "Dùng không gian phân luồng để tạo và theo dõi phiếu giao thay vì nhảy qua màn hình này.",
-        targetView: "approvals",
-        kind: "primary"
-      }
-    ],
-    reports: [
-      {
-        title: "Xem tắc nghẽn và khối lượng công việc",
-        detail: "Dùng Báo cáo để có bức tranh vận hành sau khi dữ liệu tiếp nhận, phân luồng và thực hiện đã di chuyển.",
-        kind: "primary"
-      },
-      {
-        title: "Lưu trữ hồ sơ hoàn thành (Giai đoạn 9)",
-        detail: "Mở hồ sơ đã hoàn thành trong tab Hồ sơ và dùng nút Lưu trữ để chuyển sang kho lưu trữ.",
-        targetView: "work-items"
-      }
-    ],
-    admin: [
-      {
-        title: "Quản trị chỉ dùng cho cài đặt",
-        detail: "Quản lý đơn vị và người dùng ở đây, sau đó quay lại màn hình vận hành để làm việc hàng ngày.",
-        kind: "primary"
-      }
-    ],
-    account: [
-      {
-        title: "Chỉ dùng điều khiển tài khoản",
-        detail: "Đăng nhập, phiên làm việc và đổi mật khẩu ở đây để không làm gián đoạn màn hình vận hành.",
-        kind: "primary"
-      }
-    ],
-    legacy: [
-      {
-        title: "Công cụ cũ được tách biệt",
-        detail: "Chỉ dùng cho các luồng công việc cũ không thuộc quy trình nhà trường.",
-        kind: "primary"
-      }
-    ]
-  };
-
-  const currentActions = actionsByView[currentView];
-  workflowGuidance.innerHTML = `
-    <div class="panel-header">
-      <div>
-        <p class="eyebrow">Bước tiếp theo</p>
-        <h3>Cần làm gì trong bước này</h3>
-      </div>
-    </div>
-    <div class="workflow-actions-grid">
-      ${currentActions
-        .map(
-          (action) => `
-            <article class="workflow-action-card ${action.kind === "primary" ? "is-primary" : ""}">
-              <strong>${escapeHtml(action.title)}</strong>
-              <p>${escapeHtml(action.detail)}</p>
-              ${
-                action.targetView
-                  ? `
-                    <button
-                      class="secondary-button workflow-action-button"
-                      type="button"
-                      data-guidance-view="${escapeHtml(action.targetView)}"
-                    >
-                      Mở: ${escapeHtml(titlesForView(action.targetView))}
-                    </button>
-                  `
-                  : ""
-              }
-            </article>
-          `
-        )
-        .join("")}
-    </div>
-  `;
-
-  workflowGuidance
-    .querySelectorAll<HTMLButtonElement>("[data-guidance-view]")
-    .forEach((button) => {
-      button.addEventListener("click", () => {
-        const nextView = button.dataset.guidanceView as typeof currentView | undefined;
-        if (!nextView) {
-          return;
-        }
-        currentView = nextView;
-        renderCurrentView();
-      });
-    });
+  setBadge("documents", pendingIntake);
+  setBadge("approvals", pendingApprovals);
+  setBadge("department-tasks", pendingTasks);
 }
 
-function titlesForView(view: typeof currentView): string {
-  switch (view) {
-    case "documents":
-      return "Tiếp nhận văn bản";
-    case "approvals":
-      return "Phân luồng HT";
-    case "department-tasks":
-      return "Thực hiện";
-    case "work-items":
-      return "Hồ sơ";
-    case "reports":
-      return "Báo cáo";
-    case "admin":
-      return "Quản trị";
-    case "account":
-      return "Tài khoản";
-    case "legacy":
-      return "Cũ (Legacy)";
-    case "overview":
-      return "Tổng quan";
-    case "assignments":
-      return "Giao việc";
+function renderTopbarUser(): void {
+  const label = document.querySelector<HTMLSpanElement>("#topbar-user-label");
+  if (!label) return;
+  if (currentSessionUser) {
+    label.textContent = `${currentSessionUser.displayName ?? currentSessionUser.username} · ${currentSessionUser.role}`;
+  } else {
+    label.textContent = "Chưa đăng nhập";
   }
 }
+
 
 void (async () => {
   await loadSession();

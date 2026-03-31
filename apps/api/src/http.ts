@@ -1322,10 +1322,19 @@ export async function handleRequest(
       return;
     }
 
+    const additionalDocumentIds =
+      body &&
+      typeof body === "object" &&
+      Array.isArray((body as Record<string, unknown>).additionalDocumentIds)
+        ? ((body as Record<string, unknown>).additionalDocumentIds as unknown[])
+            .filter((id): id is string => typeof id === "string")
+        : [];
+
     const created = await createWorkItemFromDocument(
       documentCreateWorkItemTargetId,
       workItemInput.value,
-      accessContext
+      accessContext,
+      additionalDocumentIds
     );
 
     if (!created) {
@@ -3514,6 +3523,13 @@ function getCreateDocumentInputError(body: unknown): string | null {
     return "Field 'ocrStatus' is invalid";
   }
 
+  if (
+    input.uploadGroupId !== undefined &&
+    typeof input.uploadGroupId !== "string"
+  ) {
+    return "Field 'uploadGroupId' must be a string if provided";
+  }
+
   return null;
 }
 
@@ -4576,10 +4592,13 @@ function sendBinary(
   path?: string,
   metadata?: Record<string, unknown>
 ): void {
+  // Use RFC 5987 encoding so non-ASCII (e.g. Vietnamese) filenames are safe
+  const asciiFilename = filename.replace(/[^\x20-\x7E]/g, "_").replaceAll('"', "");
+  const encodedFilename = encodeURIComponent(filename);
   res.writeHead(statusCode, {
     "Content-Type": contentType,
     "Content-Length": String(payload.length),
-    "Content-Disposition": `attachment; filename="${filename.replaceAll("\"", "")}"`
+    "Content-Disposition": `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`
   });
   res.end(payload);
 

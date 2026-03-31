@@ -10,6 +10,7 @@ export interface Document {
   hasFileContent?: boolean;
   ocrStatus: DocumentOcrStatus;
   uploadedByUserId: string;
+  uploadGroupId?: string;
   createdWorkItemId?: string;
   createdAt: string;
 }
