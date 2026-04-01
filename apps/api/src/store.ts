@@ -714,6 +714,53 @@ export async function createTaskUpdate(
   return mapTaskUpdateRow(updateResult.rows[0]);
 }
 
+export async function createAttachmentTaskUpdate(
+  taskId: string,
+  updatedByUserId: string,
+  accessContext?: TaskAccessContext
+): Promise<TaskUpdate | null> {
+  const taskItem = await getTaskItemById(taskId, accessContext);
+
+  if (!taskItem) {
+    return null;
+  }
+
+  const executionStatus: TaskExecutionStatus =
+    taskItem.task.status === "pending" ? "pending" : "running";
+
+  const updateResult = await getDbPool().query(
+    `
+      INSERT INTO task_updates (
+        id,
+        task_id,
+        updated_by_user_id,
+        execution_status,
+        progress_percent,
+        note
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING
+        id,
+        task_id,
+        updated_by_user_id,
+        execution_status,
+        progress_percent,
+        note,
+        created_at
+    `,
+    [
+      createTaskUpdateId(taskId),
+      taskId,
+      updatedByUserId,
+      executionStatus,
+      taskItem.task.progressPercent ?? 0,
+      "Evidence attachment uploaded"
+    ]
+  );
+
+  return mapTaskUpdateRow(updateResult.rows[0]);
+}
+
 function createTaskId(): string {
   return `task_${Date.now()}`;
 }

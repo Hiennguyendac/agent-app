@@ -45,6 +45,7 @@ import {
   approveTaskResponse,
   createTaskUpdate,
   createTask,
+  createAttachmentTaskUpdate,
   deleteTaskWithAccess,
   getTaskItemById,
   listTaskUpdates,
@@ -1947,15 +1948,62 @@ export async function handleRequest(
       return;
     }
 
+    const knownDepartments = await listDepartments();
+    const resolvedMainDepartmentId = resolveDepartmentId(
+      assignmentInput.value.mainDepartmentId,
+      knownDepartments
+    );
+
+    if (!resolvedMainDepartmentId) {
+      sendJson(
+        res,
+        400,
+        {
+          error: "Unknown main department"
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemAssignTargetId
+        }
+      );
+      return;
+    }
+
+    const resolvedCoordinating = resolveDepartmentIds(
+      assignmentInput.value.coordinatingDepartmentIds ?? [],
+      knownDepartments
+    );
+
+    if (resolvedCoordinating.unknown.length > 0) {
+      sendJson(
+        res,
+        400,
+        {
+          error: `Unknown coordinating department(s): ${resolvedCoordinating.unknown.join(", ")}`
+        },
+        startedAtMs,
+        method,
+        url,
+        {
+          userId: accessContext.userId,
+          workItemId: workItemAssignTargetId
+        }
+      );
+      return;
+    }
+
     const task = await createTask(
       {
         taskType: "school_workflow",
         title: `Assignment: ${detail.workItem.title}`,
         goal: assignmentInput.value.outputRequirement ?? detail.workItem.description,
-        audience: assignmentInput.value.mainDepartmentId,
+        audience: resolvedMainDepartmentId,
         notes: assignmentInput.value.note,
         workItemId: detail.workItem.id,
-        ownerDepartmentId: assignmentInput.value.mainDepartmentId,
+        ownerDepartmentId: resolvedMainDepartmentId,
         progressPercent: 0
       },
       null
@@ -1963,8 +2011,8 @@ export async function handleRequest(
 
     const assignment = await createAssignment({
       workItemId: detail.workItem.id,
-      mainDepartmentId: assignmentInput.value.mainDepartmentId,
-      coordinatingDepartmentIds: assignmentInput.value.coordinatingDepartmentIds,
+      mainDepartmentId: resolvedMainDepartmentId,
+      coordinatingDepartmentIds: resolvedCoordinating.ids,
       deadline: assignmentInput.value.deadline,
       priority: assignmentInput.value.priority,
       outputRequirement: assignmentInput.value.outputRequirement,
@@ -3225,10 +3273,24 @@ export async function handleRequest(
       return;
     }
 
-    // Use a dummy update id if not provided (file attached directly to task)
-    const taskUpdateId = typeof fileInput.taskUpdateId === "string"
-      ? fileInput.taskUpdateId
-      : `tup_direct_${taskFilesTargetId}`;
+    let taskUpdateId: string;
+
+    if (typeof fileInput.taskUpdateId === "string") {
+      taskUpdateId = fileInput.taskUpdateId;
+    } else {
+      const attachmentUpdate = await createAttachmentTaskUpdate(
+        taskFilesTargetId,
+        accessContext.userId as string,
+        accessContext
+      );
+
+      if (!attachmentUpdate) {
+        sendJson(res, 404, { error: "Task not found" }, startedAtMs, method, url, { userId: accessContext.userId, taskId: taskFilesTargetId });
+        return;
+      }
+
+      taskUpdateId = attachmentUpdate.id;
+    }
 
     const file = await addTaskUpdateFile(
       taskUpdateId,
@@ -3535,6 +3597,47 @@ function getCreateDocumentInputError(body: unknown): string | null {
 
 function isCreateDocumentInput(body: unknown): body is CreateDocumentInput {
   return getCreateDocumentInputError(body) === null;
+}
+
+function resolveDepartmentId(
+  rawValue: string,
+  departments: Department[]
+): string | null {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const byId = departments.find((department) => department.id === trimmed);
+  if (byId) {
+    return byId.id;
+  }
+
+  const byName = departments.find(
+    (department) => department.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  return byName ? byName.id : null;
+}
+
+function resolveDepartmentIds(
+  rawValues: string[],
+  departments: Department[]
+): { ids: string[]; unknown: string[] } {
+  const ids: string[] = [];
+  const unknown: string[] = [];
+
+  for (const rawValue of rawValues) {
+    const resolved = resolveDepartmentId(rawValue, departments);
+    if (resolved) {
+      if (!ids.includes(resolved)) {
+        ids.push(resolved);
+      }
+    } else if (rawValue.trim()) {
+      unknown.push(rawValue.trim());
+    }
+  }
+
+  return { ids, unknown };
 }
 
 function getCreateWorkItemFromDocumentInput(
